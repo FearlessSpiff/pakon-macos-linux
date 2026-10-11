@@ -62,4 +62,9 @@ name: the website's Download button points at
 - EEPROM archives: `~/Library/Application Support/Pakon/eeprom/` (the app
   bundle is read-only). Keep a copy off the machine, as with `backups/eeprom/`.
 - Log: `~/Library/Logs/Pakon/pakon.log`.
-- Scans: wherever the operator picks in the UI (home folder by default).
+- Scans: one folder per order in the work folder (`~/pakon` by default, set in
+  the UI), e.g. `~/pakon/000042/2026-10-11-14-30-scan.raw`. The work folder and
+  the order counter are in `~/Library/Application Support/Pakon/settings.json`.
+- Saved exports: in the scan's order folder (a raw opened from elsewhere gets
+  a folder named after it), under `jpeg/`, `tiff/` and `raw/`.
+- Temp files (the decoded roll, ~1 GB): `/tmp/pakon_web`, emptied at launch.

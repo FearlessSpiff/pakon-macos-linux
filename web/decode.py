@@ -49,6 +49,24 @@ import oem_sba  # noqa: E402
 from . import eeprom  # noqa: E402
 
 WORK_DIR = Path("/tmp/pakon_web")
+# What an export leaves in WORK_DIR; replaced by the next export or roll.
+_FRAME_FILES = ("frame_*", "thumb_*", "contact_sheet.jpg", "export_*.zip")
+
+
+def clear_work(everything=False):
+    """Delete temp files: the exported frames (a new roll or export replaces
+    them), or with everything=True all of WORK_DIR, the ribbon cache too (at
+    startup: nothing there belongs to this run)."""
+    if not WORK_DIR.exists():
+        return
+    paths = (WORK_DIR.iterdir() if everything else
+             (p for pat in _FRAME_FILES for p in WORK_DIR.glob(pat)))
+    for p in list(paths):
+        if p.is_file():
+            try:
+                p.unlink()
+            except OSError:
+                pass
 # Row layout is auto-detected per raw (F-135 vs the F-135+ per-resolution
 # strides); PAKON_LINEWIDTH + PAKON_IR_LANE=0/1 override the detection.
 _LINEWIDTH_OVERRIDE = os.environ.get("PAKON_LINEWIDTH")
@@ -117,8 +135,8 @@ def _sba_shifts(crops, oem, roll=None):
 
 RIBBON_PATH = WORK_DIR / "ribbon.npy"
 PREVIEW_PATH = WORK_DIR / "preview.jpg"
-_PREVIEW_H = 300               # target short-axis (frame height) of the preview
-_FRAME_W = 3000                # fixed crop width (long axis), capped at pitch
+_PREVIEW_H = 500               # target short-axis (frame height) of the preview
+_FRAME_W = 3000                # fixed crop width (long axis): 3000x2000, 3:2
 
 
 def _build_ribbon(raw_path, emit):
@@ -185,6 +203,7 @@ def prescan(raw_path, progress=None) -> dict:
     """Stage 1. Build + cache the ribbon, render the long preview strip, and
     auto-detect initial frame centres. Returns a metadata dict (all JSON-able)."""
     WORK_DIR.mkdir(parents=True, exist_ok=True)
+    clear_work()                          # the last roll's frames
 
     def emit(step, pct):
         if progress:
@@ -237,7 +256,7 @@ def prescan(raw_path, progress=None) -> dict:
                          [float(x) for x in balance[1]]]),
         "rows": int(rows), "cols": int(cols),
         "pitch": int(pitch),
-        "frame_w": int(min(_FRAME_W, pitch)),
+        "frame_w": _FRAME_W,
         "centres": centres,                # initial detected centres (full rows)
         "preview_w": int(prev_w), "preview_h": int(prev_h),
         "scale": float(scale),             # preview_x = full_row * scale
@@ -253,13 +272,14 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
     the TIFF and the JPEG; otherwise the Dmin inversion + rpd.pf JPEG render.
 
     `widths` is an optional per-frame crop width (full-res rows) parallel to
-    `centres` — lets the operator mix full- and half-frame boxes. When omitted,
+    `centres` — lets the operator mix full, half and panoramic boxes. When omitted,
     every crop uses `frame_w`.
 
     `roll_centres` are the prescan's detected frames: the OEM scene balance
     weighs the exported frames against the whole roll, so a few similar
     frames exported alone are not pushed toward their own average."""
     WORK_DIR.mkdir(parents=True, exist_ok=True)
+    clear_work()                          # the last export's frames
 
     def emit(step, pct):
         if progress:
