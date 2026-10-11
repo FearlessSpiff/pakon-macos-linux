@@ -179,6 +179,82 @@
 
     .file-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 
+    /* ── Spaces: one page per step, switched from the bar along the bottom ── */
+    body { padding-bottom: 110px; }
+    .space { display: none; }
+    .space.active { display: block; }
+    .space-empty { text-align: center; padding: 48px 24px; }
+    .space-empty p { color: var(--muted); font-size: 0.92rem; margin-top: 6px; }
+    .spaces {
+      position: fixed; left: 0; right: 0; bottom: 0; z-index: 50;
+      display: flex; justify-content: center; gap: 4px;
+      background: var(--border); padding: 6px 16px 8px;
+    }
+    .spaces button {
+      all: unset; cursor: pointer; position: relative;
+      display: flex; flex-direction: column; align-items: center; gap: 4px;
+      min-width: 96px; padding: 8px 14px;
+      color: #9a968e; border-top: 3px solid transparent;
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.06em;
+    }
+    .spaces button svg { width: 24px; height: 24px; }
+    .spaces button:hover { color: var(--surface); }
+    .spaces button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .spaces button[aria-selected="true"] { color: var(--accent); border-top-color: var(--accent); }
+    .spaces button.busy::after {          /* work still running in that space */
+      content: ""; position: absolute; top: 8px; right: 26px;
+      width: 8px; height: 8px; border-radius: 50%; background: var(--red);
+      animation: blink 1s steps(2) infinite;
+    }
+    @keyframes blink { 50% { opacity: 0; } }
+
+    /* ── Export space: download options ── */
+    .dl-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+    button.dl {
+      text-align: left; text-transform: none; display: flex; flex-direction: column; gap: 4px;
+      padding: 14px 16px; background: var(--surface2);
+    }
+    button.dl:hover:not(:disabled) { background: var(--accent); }
+    .dl-name { font-family: 'Space Grotesk', sans-serif; font-size: 1rem; font-weight: 700; text-transform: uppercase; }
+    .dl-desc { font-family: 'Inter', sans-serif; font-size: 0.8rem; font-weight: 400; line-height: 1.4; color: var(--muted); }
+    button.dl:hover .dl-desc { color: var(--text); }
+
+    /* ── Scan card: work folder / order / actions table ── */
+    .scan-table { width: 100%; border-collapse: collapse; table-layout: fixed; border: 2px solid var(--border); }
+    .scan-table th {
+      text-align: left; padding: 8px 12px;
+      background: var(--border); color: var(--surface);
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.72rem; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.04em;
+    }
+    .scan-table td {
+      padding: 10px 12px; vertical-align: middle; background: var(--surface2);
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.88rem;
+    }
+    .scan-table td + td, .scan-table th + th { border-left: 2px solid var(--border); }
+    .scan-table .col-order { width: 9.5em; }
+    .scan-table .col-act { width: 262px; }      /* Scan + Advance film buttons + gap + padding + shadow */
+    /* narrow: one labelled row per cell instead of three squeezed columns */
+    @media (max-width: 560px) {
+      .scan-table thead { display: none; }
+      .scan-table tr, .scan-table td { display: block; }
+      .scan-table td + td { border-left: none; border-top: 2px solid var(--border); }
+      .scan-table td::before {
+        content: attr(data-label); display: block; margin-bottom: 6px;
+        font-size: 0.72rem; font-weight: 600; text-transform: uppercase; color: var(--muted);
+      }
+    }
+    .folder-cell { display: flex; align-items: center; gap: 10px; min-width: 0; }
+    .folder-path { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+    .order-num { font-family: 'Space Grotesk', sans-serif; font-size: 1.15rem; font-weight: 700; }
+    .act-cell { display: flex; gap: 8px; }
+    button.icon {
+      width: 36px; height: 36px; padding: 0; flex-shrink: 0;
+      display: grid; place-items: center;
+    }
+    button.icon svg { width: 18px; height: 18px; display: block; }
+
     /* ── Process card: steps + the loaded raw ── */
     .lead { font-size: 0.92rem; line-height: 1.5; max-width: 62ch; margin-bottom: 18px; }
     .steps {
@@ -299,7 +375,7 @@
     .strip-wrap::after { bottom: 2px; }
     
     .strip-inner { position: relative; line-height: 0; margin: 8px 0; }
-    #strip-img { display: block; height: auto; }
+    #strip-img { display: block; height: auto; }   /* sized by fitStrip() */
     .cropbox {
       position: absolute; top: 0; bottom: 0;
       border: 2px solid rgba(255,181,0,0.8);
@@ -323,7 +399,7 @@
       position: fixed; inset: 0;
       background: rgba(0, 0, 0, 0.8);
       display: flex; align-items: center; justify-content: center;
-      z-index: 50;
+      z-index: 100;                 /* above the space bar */
     }
     .modal {
       background: var(--surface);
@@ -380,6 +456,16 @@
   </div>
 </header>
 
+<!-- ══ Scan space ══ -->
+<section class="space" id="space-scan" role="tabpanel" aria-labelledby="tab-scan">
+
+<!-- No scanner (disconnected / unknown) -->
+<div class="card space-empty hidden" id="scan-empty">
+  <h2>No scanner</h2>
+  <p id="scan-empty-msg">Connect the F-135 by USB and turn it on. It shows up here by itself.</p>
+  <p>To work on a roll you already scanned, go to <b>Process</b>.</p>
+</div>
+
 <!-- Firmware (cold only) -->
 <div class="card hidden" id="fw-card">
   <h2>Firmware</h2>
@@ -397,18 +483,31 @@
 <!-- Scan (warm only) -->
 <div class="card hidden" id="scan-card">
   <h2>Scan</h2>
-  <div class="file-row" style="margin-bottom: 14px;">
-    <span class="msg">Work folder:</span>
-    <span class="file-name set" id="scan-out">…</span>
-    <button class="ghost" id="scan-out-btn">Change…</button>
-    <span class="msg" id="scan-order"></span>
-  </div>
-  <div class="row">
-    <button id="scan-btn">Scan</button>
-    <button class="ghost" id="eject-btn">Eject film</button>
-    <span class="msg" id="scan-msg"></span>
-  </div>
-  <div class="msg" id="scan-mode" style="margin-top: 8px;"></div>
+  <table class="scan-table">
+    <thead>
+      <tr><th>Work folder</th><th class="col-order">Next order</th><th class="col-act">Film</th></tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td data-label="Work folder">
+          <div class="folder-cell">
+            <span class="folder-path" id="scan-out">…</span>
+            <button class="ghost icon" id="scan-out-btn" title="Change the work folder"
+                    aria-label="Change the work folder"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="square" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13 7l4 4"/></svg></button>
+          </div>
+        </td>
+        <td data-label="Next order"><span class="order-num" id="scan-order">—</span></td>
+        <td data-label="Film">
+          <div class="act-cell">
+            <button id="scan-btn">Scan</button>
+            <button class="ghost" id="eject-btn">Advance film</button>
+          </div>
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  <div class="msg" id="scan-msg" style="margin-top: 10px;"></div>
+  <div class="msg" id="scan-mode" style="margin-top: 6px;"></div>
   <div class="feed-prompt" id="feed-prompt"></div>
   <div class="progress-wrap" id="scan-prog-wrap">
     <progress id="scan-prog" max="2200"></progress>
@@ -416,6 +515,11 @@
   </div>
   <div class="log-box" id="scan-log"></div>
 </div>
+
+</section>
+
+<!-- ══ Process space ══ -->
+<section class="space" id="space-process" role="tabpanel" aria-labelledby="tab-process">
 
 <!-- Process (always) -->
 <div class="card" id="proc-card">
@@ -428,7 +532,7 @@
       on this computer. It is read in place, never copied, and processed right
       away: a preview of the whole strip with the frames found, in a few seconds
       to a minute.</li>
-    <li><strong>Place and export</strong>Click the strip to start a box there, <kbd>Enter</kbd>
+    <li><strong>Place and export</strong>The roll opens in <b>Frames</b>. Click the strip to start a box there, <kbd>Enter</kbd>
       adds the next one. Export saves the box positions beside the raw, so
       opening it again brings them back.</li>
   </ol>
@@ -444,6 +548,20 @@
     <div class="progress-label" id="proc-prog-label"></div>
   </div>
   <div class="msg" id="proc-msg" style="margin-top: 8px;"></div>
+</div>
+
+</section>
+
+<!-- ══ Frames space: place the boxes, export, the exported frames ══ -->
+<section class="space" id="space-frames" role="tabpanel" aria-labelledby="tab-frames">
+
+<!-- Nothing to place yet: no roll, or still processing -->
+<div class="card space-empty" id="frames-wait">
+  <h2 id="frames-wait-title">No roll open</h2>
+  <p id="frames-wait-msg">Scan a roll, or open a <code>.raw</code> in <b>Process</b>. Its frames come up here.</p>
+  <div class="progress-wrap" id="frames-wait-prog-wrap" style="max-width: 420px; margin: 16px auto 0;">
+    <progress id="frames-wait-prog" value="0" max="1"></progress>
+  </div>
 </div>
 
 <!-- Confirm frames (minilab-style crop placement) -->
@@ -465,6 +583,7 @@
       <button id="export-btn">Export <span id="export-count"></span> frames</button>
     </div>
   </div>
+  <div class="msg" id="frames-msg" style="margin-top: -8px; margin-bottom: 4px;"></div>
   <div class="strip-wrap" id="strip-wrap">
     <div class="strip-inner" id="strip-inner">
       <img id="strip-img" alt="film strip">
@@ -477,21 +596,68 @@
   </div>
 </div>
 
+</section>
+
+<!-- ══ Export space: the exported frames and the downloads ══ -->
+<section class="space" id="space-export" role="tabpanel" aria-labelledby="tab-export">
+
+<div class="card space-empty" id="export-empty">
+  <h2>Nothing exported yet</h2>
+  <p>Place the boxes in <b>Frames</b> and press <b>Export</b>. The finished frames come up here.</p>
+</div>
+
+<!-- Downloads -->
+<div class="card hidden" id="export-options">
+  <div class="frames-header">
+    <h2 id="export-title">Save</h2>
+  </div>
+  <p class="lead" style="margin-bottom: 14px;">Saves into
+    <code id="export-folder">the work folder</code>, one subfolder per kind.</p>
+  <div class="dl-grid">
+    <button class="ghost dl" data-save="jpeg">
+      <span class="dl-name">JPEGs</span>
+      <span class="dl-desc">Finished colour, ready to share or print. Into <code>jpeg/</code>.</span>
+    </button>
+    <button class="ghost dl" data-save="tiff">
+      <span class="dl-name">TIFFs</span>
+      <span class="dl-desc">16-bit positives, for editing with the most headroom. Into <code>tiff/</code>.</span>
+    </button>
+    <button class="ghost dl" data-save="raw">
+      <span class="dl-name">Raw negatives</span>
+      <span class="dl-desc">16-bit uninverted TIFFs, to invert in another tool. Into <code>raw/</code>.</span>
+    </button>
+    <button class="ghost dl" data-save="contact">
+      <span class="dl-name">Contact sheet</span>
+      <span class="dl-desc">Every frame on one numbered JPEG, <code>contact_sheet.jpg</code>.</span>
+    </button>
+  </div>
+  <div class="progress-wrap" id="save-prog-wrap">
+    <progress id="save-prog" value="0" max="1"></progress>
+    <div class="progress-label" id="save-prog-label"></div>
+  </div>
+  <div class="row" style="margin-top: 12px;">
+    <span class="msg" id="save-msg"></span>
+    <button class="ghost hidden" id="save-reveal">Show in Finder</button>
+  </div>
+</div>
+
 <!-- Frames (after export) -->
 <div class="card hidden" id="frames-section">
   <div class="frames-header">
     <h2 id="frames-title">Frames</h2>
-    <div class="row">
-      <span class="msg">Export:</span>
-      <button class="ghost" id="export-jpeg">JPEGs</button>
-      <button class="ghost" id="export-contact">Contact sheet</button>
-      <button class="ghost" id="export-tiff">TIFFs</button>
-      <button class="ghost" id="export-raw">Raw negatives</button>
-      <button class="ghost" id="clear-btn" style="border-color: var(--red); color: var(--red);">Clear</button>
-    </div>
   </div>
   <div class="frames-grid" id="frames-grid"></div>
 </div>
+
+</section>
+
+<!-- Space switcher, along the bottom like a Resolve page bar -->
+<nav class="spaces" role="tablist" aria-label="Workspace">
+  <button role="tab" id="tab-scan" data-space="scan" aria-controls="space-scan" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="6" width="18" height="12"/><path d="M3 9h18M3 15h18M7 6v3M11 6v3M15 6v3M19 6v3M7 15v3M11 15v3M15 15v3M19 15v3"/></svg>Scan</button>
+  <button role="tab" id="tab-process" data-space="process" aria-controls="space-process" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="5" width="18" height="14"/><rect x="6" y="8" width="7" height="8"/><path d="M16 9h2M16 12h2M16 15h2"/></svg>Process</button>
+  <button role="tab" id="tab-frames" data-space="frames" aria-controls="space-frames" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="2" y="7" width="9" height="10"/><rect x="13" y="7" width="9" height="10"/><path d="M2 4h20M2 20h20"/></svg>Frames</button>
+  <button role="tab" id="tab-export" data-space="export" aria-controls="space-export" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 15v5h16v-5"/></svg>Export</button>
+</nav>
 
 <!-- Folder picker -->
 <div class="modal-backdrop hidden" id="browse-modal">
@@ -567,6 +733,12 @@
 
       $('fw-card').classList.toggle('hidden', d.state !== 'cold');
       $('scan-card').classList.toggle('hidden', d.state !== 'warm');
+      $('scan-empty').classList.toggle('hidden', d.state === 'cold' || d.state === 'warm');
+      $('scan-empty-msg').textContent = d.state === 'unknown' && d.state_error
+        ? d.state_error
+        : 'Connect the F-135 by USB and turn it on. It shows up here by itself.';
+      // First status: open on Scan when a scanner is there, else on Process.
+      if (!currentSpace) showSpace(d.state === 'warm' || d.state === 'cold' ? 'scan' : 'process');
 
       $('scan-mode').textContent = d.eeprom
         ? `F-135: scan built in code (EEPROM ${d.eeprom}); F-135+: replayed script`
@@ -577,7 +749,9 @@
       showWorkDir(d.work_dir, d.next_order);
 
       // If a scan file exists server-side and we haven't surfaced it yet
-    } catch {}
+    } catch {
+      if (!currentSpace) showSpace('process');   // no status: still show something
+    }
   }
 
   // The raw being processed: file name on top, its folder underneath.
@@ -588,6 +762,20 @@
     $('raw-slot').title = path || '';
     $('raw-slot').classList.toggle('set', !!path);
   }
+
+  // ── Spaces ───────────────────────────────────────────────────────────────
+  let currentSpace = null;
+  function showSpace(name) {
+    currentSpace = name;
+    document.querySelectorAll('.space').forEach(s =>
+      s.classList.toggle('active', s.id === 'space-' + name));
+    document.querySelectorAll('.spaces button').forEach(b =>
+      b.setAttribute('aria-selected', String(b.dataset.space === name)));
+    if (name === 'frames' && crops.length) fitStrip();
+  }
+  const setBusy = (name, on) => $('tab-' + name).classList.toggle('busy', on);
+  document.querySelectorAll('.spaces button').forEach(b =>
+    b.addEventListener('click', () => showSpace(b.dataset.space)));
 
   setInterval(pollStatus, 2000);
   pollStatus();
@@ -632,6 +820,7 @@
     const btn = $('scan-btn');
     btn.disabled = true;
     $('eject-btn').disabled = true;
+    setBusy('scan', true);
     setMsg($('scan-msg'), 'Starting…');
     $('scan-prog-wrap').classList.add('show');
     $('scan-prog').value = 0;
@@ -654,7 +843,7 @@
         $('scan-prog').value = $('scan-prog').max;
         $('scan-prog-label').textContent = `Complete — ${ev.mb} MB`;
         setMsg($('scan-msg'), `Scan complete (${ev.mb} MB)`, 'ok');
-        if (ev.path) { showRaw(ev.path); processRaw(); }
+        if (ev.path) { showRaw(ev.path); showSpace('frames'); processRaw(); }
       } else if (ev.type === 'error') {
         setMsg($('scan-msg'), ev.message, 'err');
       }
@@ -663,14 +852,15 @@
     $('feed-prompt').classList.remove('show');
     btn.disabled = false;
     $('eject-btn').disabled = false;
+    setBusy('scan', false);
   });
 
-  // ── Eject ────────────────────────────────────────────────────────────────
+  // ── Advance film (runs the film out of the transport) ─────────────────
   $('eject-btn').addEventListener('click', async () => {
     const btn = $('eject-btn');
     btn.disabled = true;
     $('scan-btn').disabled = true;
-    setMsg($('scan-msg'), 'Ejecting…');
+    setMsg($('scan-msg'), 'Advancing film…');
     $('scan-log').textContent = '';
     await postSSE('/api/eject', {}, ev => {
       if (ev.type === 'log') {
@@ -678,7 +868,7 @@
         if (ev.message.startsWith('eject:'))
           setMsg($('scan-msg'), ev.message.slice(7), 'ok');
       } else if (ev.type === 'done') {
-        if ($('scan-msg').textContent === 'Ejecting…')
+        if ($('scan-msg').textContent === 'Advancing film…')
           setMsg($('scan-msg'), 'Transport stopped', 'ok');
       } else if (ev.type === 'error') {
         setMsg($('scan-msg'), ev.message, 'err');
@@ -690,8 +880,8 @@
 
   // ── Work folder (each scan is an order folder in it) ────────────────────────
   function showWorkDir(dir, nextOrder) {
-    if (dir) { workDir = dir; $('scan-out').textContent = dir; }
-    if (nextOrder) $('scan-order').textContent = `Next order: ${nextOrder}`;
+    if (dir) { workDir = dir; $('scan-out').textContent = dir; $('scan-out').title = dir; }
+    if (nextOrder) $('scan-order').textContent = nextOrder;
   }
 
   let browsePath = null;   // dir currently shown in the modal
@@ -814,30 +1004,39 @@
   async function processRaw() {
     const btn = $('raw-open');
     btn.disabled = true;
+    setBusy('process', true);
+    setBusy('frames', true);
     setMsg($('proc-msg'), '');
     $('proc-prog-wrap').classList.add('show');
     $('proc-prog').value = 0;
+    framesWait('Processing ' + $('raw-name').textContent, 'Starting…', 0);
     $('confirm-card').classList.add('hidden');
-    $('frames-section').classList.add('hidden');
+    resetExport();
     $('frames-grid').innerHTML = '';
 
     await postSSE('/api/process', {}, ev => {
       if (ev.type === 'progress') {
         $('proc-prog').value = ev.pct;
         $('proc-prog-label').textContent = ev.step;
+        framesWait(null, ev.step, ev.pct);
       } else if (ev.type === 'done') {
         $('proc-prog').value = 1;
         $('proc-prog-label').textContent = 'Done';
+        setMsg($('proc-msg'), 'Ready — the frames are in Frames', 'ok');
         meta = ev;
         startConfirm();
-        setMsg($('proc-msg'), ev.saved
+        showSpace('frames');
+        setMsg($('frames-msg'), ev.saved
           ? `Restored ${ev.saved.centres.length} saved frames — adjust or export`
-          : 'Place frames — Enter adds the next box, Delete removes one', 'ok');
+          : 'Click the strip to place a box — Enter adds the next, Delete removes one', 'ok');
       } else if (ev.type === 'error') {
         setMsg($('proc-msg'), ev.message, 'err');
+        framesWait('Could not process the roll', ev.message, null);
       }
     });
     btn.disabled = false;
+    setBusy('process', false);
+    setBusy('frames', false);
   }
 
   // ── Confirm frames (interactive crop placement) ────────────────────────────
@@ -853,13 +1052,44 @@
       : [{ c: first, w: boxSize() }];
     cur = 0;
     $('strip-img').src = '/api/preview?t=' + Date.now();
-    $('strip-inner').style.width = meta.preview_w + 'px';
+    $('frames-wait').classList.add('hidden');
     $('confirm-card').classList.remove('hidden');
-    renderStrip();
+    fitStrip();
     $('strip-wrap').focus();
   }
 
-  const fullToPx = c => c * meta.scale;                 // full row -> preview x
+  // The Frames empty/progress card: title (null keeps it), step, progress
+  // (null hides the bar).
+  function framesWait(title, msg, pct) {
+    $('frames-wait').classList.remove('hidden');
+    if (title != null) $('frames-wait-title').textContent = title;
+    $('frames-wait-msg').textContent = msg;
+    $('frames-wait-prog-wrap').classList.toggle('show', pct != null);
+    if (pct != null) $('frames-wait-prog').value = pct;
+  }
+
+  // The strip is drawn `zoom` times the preview JPEG, so it fills most of the
+  // window height whatever the preview's own size.
+  let zoom = 1;
+  function fitStrip() {
+    if (!meta || !crops.length) return;
+    // from the strip's top on the page down to the space bar, less the
+    // strip's own padding, the card's bottom padding and the scrollbar
+    const top = $('strip-wrap').getBoundingClientRect().top + window.scrollY;
+    const bar = document.querySelector('.spaces').offsetHeight;
+    const target = Math.max(220, Math.min(720, window.innerHeight - top - bar - 100));
+    zoom = target / meta.preview_h;
+    $('strip-img').style.height = Math.round(meta.preview_h * zoom) + 'px';
+    $('strip-img').style.width = Math.round(meta.preview_w * zoom) + 'px';
+    $('strip-inner').style.width = Math.round(meta.preview_w * zoom) + 'px';
+    renderStrip();
+  }
+  window.addEventListener('resize', () => {
+    if (currentSpace === 'frames' && !$('confirm-card').classList.contains('hidden')) fitStrip();
+  });
+
+  const pxPerRow = () => meta.scale * zoom;              // full row -> strip px
+  const fullToPx = c => c * pxPerRow();
   // Box width (full-res rows) for the size selected in the dropdown.
   // Full is 3000 (3:2 at 2000 tall), half 1500, panoramic 6000.
   const BOX_MULT = { full: 1, half: 0.5, pano: 2 };
@@ -870,7 +1100,7 @@
     const inner = $('strip-inner');
     inner.querySelectorAll('.cropbox').forEach(e => e.remove());
     crops.forEach((cp, i) => {
-      const w = cp.w * meta.scale;
+      const w = cp.w * pxPerRow();
       const box = document.createElement('div');
       box.className = 'cropbox' + (i === cur ? ' active' : '');
       box.style.left = (fullToPx(cp.c) - w / 2) + 'px';
@@ -890,7 +1120,7 @@
 
   function nudge(dpx) {                  // dpx in preview pixels -> full rows
     crops[cur].c = Math.max(0, Math.min(meta.rows,
-      crops[cur].c + Math.round(dpx / meta.scale)));
+      crops[cur].c + Math.round(dpx / pxPerRow())));
     renderStrip();
   }
   const step = () => Math.max(4, Math.round(meta.pitch * 0.004));  // micro (full rows)
@@ -921,17 +1151,17 @@
   $('strip-inner').addEventListener('click', e => {
     if (e.target.closest('.cropbox')) return;
     const rect = $('strip-inner').getBoundingClientRect();
-    crops[cur].c = Math.round((e.clientX - rect.left) / meta.scale + crops[cur].w / 2);
+    crops[cur].c = Math.round((e.clientX - rect.left) / pxPerRow() + crops[cur].w / 2);
     renderStrip();
   });
 
   // keyboard: ←/→ nudge (Shift = coarse), ↑/↓ prev/next,
   // Enter adds a box, Delete/Backspace removes the current one
   window.addEventListener('keydown', e => {
-    if ($('confirm-card').classList.contains('hidden')) return;
+    if (currentSpace !== 'frames' || $('confirm-card').classList.contains('hidden')) return;
     const k = e.key, big = e.shiftKey ? 6 : 1;
-    if (k === 'ArrowLeft')       { nudge(-step() * big * meta.scale); }
-    else if (k === 'ArrowRight') { nudge(step() * big * meta.scale); }
+    if (k === 'ArrowLeft')       { nudge(-step() * big * pxPerRow()); }
+    else if (k === 'ArrowRight') { nudge(step() * big * pxPerRow()); }
     else if (k === 'ArrowUp')    { go(-1); }
     else if (k === 'ArrowDown')  { go(1); }
     else if (k === 'Enter')      { addFrame(); }
@@ -944,9 +1174,10 @@
   $('export-btn').addEventListener('click', async () => {
     const btn = $('export-btn');
     btn.disabled = true;
+    setBusy('frames', true);
     $('exp-prog-wrap').classList.add('show');
     $('exp-prog').value = 0;
-    $('frames-section').classList.add('hidden');
+    resetExport();
     $('frames-grid').innerHTML = '';
 
     await postSSE('/api/export_frames',
@@ -959,20 +1190,37 @@
         } else if (ev.type === 'done') {
           $('exp-prog').value = 1;
           $('exp-prog-label').textContent = 'Done';
-          loadFrames();
+          loadFrames().then(() => showSpace('export'));
         } else if (ev.type === 'error') {
           $('exp-prog-label').textContent = ev.message;
         }
       });
     btn.disabled = false;
+    setBusy('frames', false);
   });
 
   // ── Frames grid (after export) ─────────────────────────────────────────────
+  // Back to "nothing exported yet" (a new roll, a new export, Clear).
+  function resetExport() {
+    $('export-empty').classList.remove('hidden');
+    $('export-options').classList.add('hidden');
+    $('frames-section').classList.add('hidden');
+  }
+
   async function loadFrames() {
-    const frames = await fetch('/api/frames').then(r => r.json());
+    const { folder, frames, reveal } = await fetch('/api/frames').then(r => r.json());
+    canReveal = reveal;
     if (!frames.length) return;
+    $('export-folder').textContent = folder || 'the work folder';
+    $('export-folder').title = folder || '';
+    setMsg($('save-msg'), '');
+    $('save-reveal').classList.add('hidden');
+    $('save-prog-wrap').classList.remove('show');
+    $('export-empty').classList.add('hidden');
+    $('export-options').classList.remove('hidden');
     $('frames-section').classList.remove('hidden');
     $('frames-title').textContent = `Frames (${frames.length})`;
+    $('export-title').textContent = `Save ${frames.length} frame${frames.length === 1 ? '' : 's'}`;
     const grid = $('frames-grid');
     grid.innerHTML = '';
     for (const { index } of frames) {
@@ -997,27 +1245,42 @@
   }
 
   // ── Export zip / contact sheet ─────────────────────────────────────────────
-  $('export-raw').addEventListener('click',     () => window.location = '/api/export?fmt=raw');
-  $('export-tiff').addEventListener('click',    () => window.location = '/api/export?fmt=tiff');
-  $('export-jpeg').addEventListener('click',    () => window.location = '/api/export?fmt=jpeg');
-  $('export-contact').addEventListener('click', () => window.location = '/api/contact');
-
-  // ── Clear current scan + temp files ────────────────────────────────────────
-  $('clear-btn').addEventListener('click', async () => {
-    if (!confirm('Clear the current scan and delete decoded temp files?\n'
-                 + '(Raws saved in the work folder are kept.)')) return;
-    await fetch('/api/clear', { method: 'POST' });
-    meta = null; crops = []; cur = 0;
-    $('confirm-card').classList.add('hidden');
-    $('frames-section').classList.add('hidden');
-    $('frames-grid').innerHTML = '';
-    $('frames-title').textContent = 'Frames';
-    showRaw(null);
-    setMsg($('proc-msg'), '');
-    setMsg($('scan-msg'), '');
-    $('proc-prog-wrap').classList.remove('show');
-    $('scan-prog-wrap').classList.remove('show');
-  });
+  // ── Save to the work folder ────────────────────────────────────────────────
+  let savedPath = null;      // what Show in Finder opens
+  let canReveal = false;     // only when the server runs on a Mac
+  document.querySelectorAll('[data-save]').forEach(b => b.addEventListener('click', async () => {
+    const all = document.querySelectorAll('[data-save]');
+    all.forEach(x => x.disabled = true);
+    setBusy('export', true);
+    setMsg($('save-msg'), '');
+    $('save-reveal').classList.add('hidden');
+    $('save-prog-wrap').classList.add('show');
+    $('save-prog').value = 0;
+    $('save-prog-label').textContent = 'Starting…';
+    await postSSE('/api/save', { fmt: b.dataset.save }, ev => {
+      if (ev.type === 'progress') {
+        $('save-prog').value = ev.pct;
+        $('save-prog-label').textContent = ev.step;
+      } else if (ev.type === 'done') {
+        $('save-prog').value = 1;
+        $('save-prog-label').textContent = 'Done';
+        savedPath = ev.file || ev.folder;
+        setMsg($('save-msg'), ev.count === 1 && ev.file
+          ? `Saved the ${ev.what} to ${ev.file}`
+          : `Saved ${ev.count} ${ev.what} to ${ev.folder}`, 'ok');
+        $('save-reveal').classList.toggle('hidden', !canReveal);
+      } else if (ev.type === 'error') {
+        setMsg($('save-msg'), ev.message, 'err');
+      }
+    });
+    all.forEach(x => x.disabled = false);
+    setBusy('export', false);
+  }));
+  $('save-reveal').addEventListener('click', () => fetch('/api/reveal', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: savedPath }),
+  }));
 </script>
 </body>
 </html>

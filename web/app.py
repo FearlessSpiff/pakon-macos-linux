@@ -20,13 +20,15 @@ POST /api/process                 SSE — decode the opened .raw or the last sca
 GET  /api/frames                  list decoded frames
 GET  /api/frames/{n}/thumb        JPEG thumbnail
 GET  /api/frames/{n}/tiff         16-bit TIFF download
-GET  /api/export                  zip of all frames (fmt=raw|tiff|jpeg)
-GET  /api/contact                 JPEG contact sheet of all frames
+POST /api/save                    SSE — save the frames to the work folder (jpeg|tiff|raw|contact)
+POST /api/reveal                  show a saved export folder in Finder (macOS)
 """
 import asyncio
 import json
 import os
-import zipfile
+import shutil
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -36,7 +38,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import eeprom, orders
 from .decode import (WORK_DIR, PREVIEW_PATH, prescan, export_frames,
-                     make_contact_sheet, find_eeprom_dir)
+                     make_contact_sheet, find_eeprom_dir, clear_work)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -93,6 +95,12 @@ async def _eeprom_sync_events():
                           f" and archived as backups/eeprom/{st['archive']}"}
     elif st["error"] and st["error"] != before["error"]:
         yield {"type": "log", "message": st["error"]}
+
+
+@app.on_event("startup")
+async def _startup_clear():
+    # Temp files from an earlier run (the ribbon cache is ~1 GB a roll).
+    clear_work(everything=True)
 
 
 @app.on_event("startup")
@@ -665,7 +673,10 @@ async def api_export_frames(
 
 @app.get("/api/frames")
 async def api_frames():
-    return [{"index": f["index"]} for f in _state["frames"]]
+    raw = _state["scan_path"]
+    return {"folder": str(orders.export_dir(raw)) if raw else None,
+            "reveal": sys.platform == "darwin",          # /api/reveal works
+            "frames": [{"index": f["index"]} for f in _state["frames"]]}
 
 
 def _frame_file(n: int, key: str):
@@ -716,89 +727,76 @@ async def api_jpeg(n: int):
 # ── Zip export ────────────────────────────────────────────────────────────────
 
 # fmt -> (state key, file extension, archived name suffix)
-_EXPORT_FMTS = {
-    "raw":  ("raw_tiff", "tif", "_raw"),  # raw negative TIFF (16-bit, uninverted)
-    "tiff": ("tiff",     "tif", ""),      # inverted positive TIFF (16-bit, plain)
-    "jpeg": ("jpg",      "jpg", ""),      # rendered positive JPEG (rpd.pf look)
+# Saved exports: <export dir>/<subfolder>/frame_NN.<ext> (web/orders.py
+# export_dir), from the rendered files in WORK_DIR.
+_SAVE_FMTS = {
+    "jpeg": ("jpg",      "jpeg", "jpg", "JPEGs"),          # rendered positive
+    "tiff": ("tiff",     "tiff", "tif", "TIFFs"),          # 16-bit positive
+    "raw":  ("raw_tiff", "raw",  "tif", "raw negatives"),  # 16-bit, uninverted
 }
 
 
-@app.get("/api/export")
-async def api_export(fmt: str = "tiff"):
-    frames = _state["frames"]
-    if not frames:
-        return JSONResponse({"error": "no frames to export"}, status_code=404)
-
-    fmt = fmt.lower()
-    if fmt not in _EXPORT_FMTS:
-        return JSONResponse({"error": f"unknown format: {fmt}"}, status_code=400)
-    state_key, ext, suffix = _EXPORT_FMTS[fmt]
-
-    zip_path = WORK_DIR / f"export_{fmt}.zip"
-
-    def _make_zip() -> Path:
-        with zipfile.ZipFile(str(zip_path), "w", zipfile.ZIP_DEFLATED) as zf:
-            for f in frames:
-                path = f.get(state_key)
-                if path and path.exists():
-                    zf.write(str(path), f"frame_{f['index']:02d}{suffix}.{ext}")
-        return zip_path
-
-    await asyncio.get_event_loop().run_in_executor(None, _make_zip)
-    return FileResponse(
-        zip_path,
-        media_type="application/zip",
-        filename=f"pakon_frames_{fmt}.zip",
-    )
-
-
-@app.get("/api/contact")
-async def api_contact():
-    """A single JPEG contact sheet of all rendered frames."""
-    frames = _state["frames"]
-    if not frames:
-        return JSONResponse({"error": "no frames"}, status_code=404)
-
-    out = WORK_DIR / "contact_sheet.jpg"
-
-    def _make() -> Path | None:
+def _save_frames(frames, fmt: str, raw: Path, progress) -> dict:
+    out = orders.export_dir(raw)
+    if fmt == "contact":
+        progress("Making the contact sheet", 0.1)
         sheet = make_contact_sheet(frames)
         if sheet is None:
-            return None
-        sheet.save(str(out), "JPEG", quality=90)
-        return out
+            raise ValueError("no rendered frames")
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / "contact_sheet.jpg"
+        sheet.save(str(path), "JPEG", quality=90)
+        progress("Saved", 1.0)
+        return {"folder": str(out), "file": str(path), "count": 1,
+                "what": "contact sheet"}
 
-    result = await asyncio.get_event_loop().run_in_executor(None, _make)
-    if result is None:
-        return JSONResponse({"error": "no rendered frames"}, status_code=404)
-    return FileResponse(out, media_type="image/jpeg",
-                        filename="pakon_contact_sheet.jpg")
+    key, sub, ext, what = _SAVE_FMTS[fmt]
+    folder = out / sub
+    folder.mkdir(parents=True, exist_ok=True)
+    # an earlier save of this roll may have had more frames
+    for old in folder.glob(f"frame_*.{ext}"):
+        old.unlink()
+    n = len(frames)
+    for i, f in enumerate(frames):
+        progress(f"Saving frame {i + 1}/{n}", i / n)
+        shutil.copyfile(f[key], folder / f"frame_{f['index']:02d}.{ext}")
+    progress("Saved", 1.0)
+    return {"folder": str(folder), "count": n, "what": what}
 
 
-# ── Clear / cleanup ─────────────────────────────────────────────────────────────
+@app.post("/api/save")
+async def api_save(fmt: str = Body(..., embed=True)):
+    """Save the exported frames of the current roll into the work folder."""
+    frames, raw = _state["frames"], _state["scan_path"]
+    if fmt != "contact" and fmt not in _SAVE_FMTS:
+        message = f"unknown format: {fmt}"
+    elif not frames or raw is None:
+        message = "Export the frames first"
+    elif _state["processing"]:
+        message = "Already processing"
+    else:
+        message = None
+    if message:
+        async def _refuse():
+            yield _sse({"type": "error", "message": message})
+        return StreamingResponse(_refuse(), media_type="text/event-stream",
+                                 headers=_SSE_HEADERS)
+    _state["processing"] = True
+    return _run_job(lambda prog: _save_frames(frames, fmt, raw, prog),
+                    lambda result: {"type": "done", **result})
 
-@app.post("/api/clear")
-async def api_clear():
-    """Reset the current scan and delete temp artifacts under WORK_DIR.
 
-    Only files inside WORK_DIR (/tmp/pakon_web) are removed — the raws in the
-    work folder's order folders are left untouched.
-    """
-    removed = 0
-    if WORK_DIR.exists():
-        for p in WORK_DIR.iterdir():
-            if p.is_file():
-                try:
-                    p.unlink()
-                    removed += 1
-                except OSError:
-                    pass
-
-    _state["scan_path"] = None
-    _state["frames"] = []
-    _state["prescan"] = None
-    _state["processing"] = False
-    return {"cleared": removed}
+@app.post("/api/reveal")
+async def api_reveal(path: str = Body(..., embed=True)):
+    """Show a saved export in Finder. Only inside the work folder, macOS only."""
+    target = Path(path).resolve()
+    base = orders.work_dir().expanduser().resolve()
+    if sys.platform != "darwin" or not (target == base or base in target.parents):
+        return JSONResponse({"error": "not available"}, status_code=400)
+    # a file is selected in its folder; a folder is opened
+    subprocess.Popen(["open", "-R", str(target)] if target.is_file()
+                     else ["open", str(target)])
+    return {"ok": True}
 
 
 # ── Static files (must be last) ───────────────────────────────────────────────

@@ -200,8 +200,9 @@ replaying sequences extracted from USB captures of the OEM driver.
 **Option A — web UI (recommended):** start the web service (see below) and
 open `http://localhost:8000`. Open the `.raw` (a scan is already loaded), click **Process** (prescan →
 long preview strip + detected frames), **confirm/position each crop** on the
-strip, then **Export** for high-res output (raw negative TIFF, plain positive
-TIFF, and rendered JPEG per frame, plus a contact sheet).
+strip, then **Export** for high-res output, and save it from the Export page
+into the work folder: `jpeg/`, `tiff/` (plain positive) and `raw/` (raw
+negative TIFF) subfolders, plus a contact sheet.
 
 **Option B — command line:** requires Python 3, `numpy`, `pillow` (with
 littlecms, for `--jpeg`), and ImageMagick (`magick`).

@@ -54,6 +54,18 @@ def set_work_dir(path: Path) -> Path:
     return path
 
 
+def export_dir(raw: Path) -> Path:
+    """Where a roll's saved exports go: the raw's own folder when that is a
+    folder inside the work folder (a scan's order folder), else a folder named
+    after the raw in the work folder. Each format gets a subfolder there
+    (jpeg/, tiff/, raw/)."""
+    base = work_dir().expanduser().resolve()
+    folder = raw.resolve().parent
+    if base in folder.parents:
+        return folder
+    return base / raw.stem
+
+
 def _next_id(data: dict, base: Path) -> int:
     """The stored counter, moved past the highest order folder in `base`."""
     n = int(data.get("next_order", 1))

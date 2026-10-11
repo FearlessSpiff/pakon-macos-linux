@@ -38,6 +38,16 @@ class OrdersTest(unittest.TestCase):
         (self.work / "000041").mkdir()
         self.assertEqual(orders.new_order()[0], "000042")
 
+    def test_export_dir(self):
+        # a scan's order folder holds its exports
+        _, raw = orders.new_order()
+        self.assertEqual(orders.export_dir(raw), raw.parent.resolve())
+        # a raw from elsewhere, or loose in the work folder, gets its own folder
+        other = Path(self.tmp.name) / "photos" / "c200.raw"
+        self.assertEqual(orders.export_dir(other), self.work.resolve() / "c200")
+        self.assertEqual(orders.export_dir(self.work / "gold.raw"),
+                         self.work.resolve() / "gold")
+
     def test_work_dir_defaults_to_home_pakon(self):
         orders.SETTINGS.unlink()
         self.assertEqual(orders.work_dir(), Path.home() / "pakon")
