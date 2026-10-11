@@ -153,19 +153,6 @@
     input[type="number"] { width: 68px; }
     input[type="text"]   { width: 130px; }
     select               { padding-right: 6px; cursor: pointer; }
-    input[type="file"]   { display: none; }
-    .upload-label {
-      background: var(--surface);
-      border: 2px dashed var(--border);
-      padding: 7px 13px;
-      font-size: 0.88rem;
-      font-family: 'IBM Plex Mono', monospace;
-      font-weight: 600;
-      color: var(--text);
-      cursor: pointer;
-      transition: all 0.15s;
-    }
-    .upload-label:hover { background: var(--bg); border-style: solid; }
 
     .progress-wrap { margin-top: 16px; display: none; }
     .progress-wrap.show { display: block; }
@@ -191,6 +178,50 @@
     .feed-prompt.show { display: block; }
 
     .file-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+
+    /* ── Process card: steps + the loaded raw ── */
+    .lead { font-size: 0.92rem; line-height: 1.5; max-width: 62ch; margin-bottom: 18px; }
+    .steps {
+      list-style: none; counter-reset: step;
+      display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 12px; margin-bottom: 20px;
+    }
+    .steps li {
+      counter-increment: step;
+      border: 2px solid var(--border); background: var(--surface2);
+      padding: 12px 14px 12px 50px; position: relative;
+      font-size: 0.84rem; line-height: 1.45;
+    }
+    .steps li::before {
+      content: counter(step);
+      position: absolute; left: 12px; top: 12px;
+      width: 26px; height: 26px; display: grid; place-items: center;
+      background: var(--border); color: var(--accent);
+      font-family: 'Space Grotesk', sans-serif; font-weight: 700;
+    }
+    .steps strong {
+      display: block; margin-bottom: 2px;
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; text-transform: uppercase;
+    }
+    .steps kbd {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem;
+      border: 1px solid var(--border); padding: 0 4px; background: var(--surface);
+    }
+    .raw-slot {
+      display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+      border: 2px dashed var(--border); padding: 12px 14px;
+    }
+    .raw-slot.set { border-style: solid; background: var(--surface2); }
+    .raw-info { flex: 1 1 220px; min-width: 0; }
+    .raw-title {
+      font-family: 'IBM Plex Mono', monospace; font-weight: 600; font-size: 0.92rem;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .raw-slot:not(.set) .raw-title { color: var(--muted); font-weight: 400; }
+    .raw-sub {
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.75rem; color: var(--muted);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px;
+    }
     .file-name {
       font-size: 0.83rem; font-family: 'IBM Plex Mono', monospace;
       color: var(--muted); max-width: 280px;
@@ -367,9 +398,10 @@
 <div class="card hidden" id="scan-card">
   <h2>Scan</h2>
   <div class="file-row" style="margin-bottom: 14px;">
-    <span class="msg">Output folder:</span>
+    <span class="msg">Work folder:</span>
     <span class="file-name set" id="scan-out">…</span>
-    <button class="ghost" id="scan-out-btn">Choose…</button>
+    <button class="ghost" id="scan-out-btn">Change…</button>
+    <span class="msg" id="scan-order"></span>
   </div>
   <div class="row">
     <button id="scan-btn">Scan</button>
@@ -388,24 +420,24 @@
 <!-- Process (always) -->
 <div class="card" id="proc-card">
   <h2>Process</h2>
-  <div class="file-row">
-    <span class="file-name" id="raw-name">No file — run a scan or upload a .raw file</span>
-    <label class="upload-label">
-      <input type="file" id="raw-upload" accept=".raw">
-      Upload .raw…
-    </label>
-  </div>
-  <div class="row" style="margin-top: 14px;">
-    <label class="field">
-      Rotate
-      <select id="rotate">
-        <option value="0">0°</option>
-        <option value="90" selected>90°</option>
-        <option value="180">180°</option>
-        <option value="270">270°</option>
-      </select>
-    </label>
-    <button id="proc-btn" disabled>Process</button>
+  <p class="lead">Turn a scanned roll into finished frames. A scan you just ran
+    opens here by itself; to work on an older roll, open its
+    <code>.raw</code> from the work folder.</p>
+  <ol class="steps">
+    <li><strong>Open a raw</strong>Scan a roll, or <b>Open…</b> any <code>.raw</code>
+      on this computer. It is read in place, never copied, and processed right
+      away: a preview of the whole strip with the frames found, in a few seconds
+      to a minute.</li>
+    <li><strong>Place and export</strong>Click the strip to start a box there, <kbd>Enter</kbd>
+      adds the next one. Export saves the box positions beside the raw, so
+      opening it again brings them back.</li>
+  </ol>
+  <div class="raw-slot" id="raw-slot">
+    <div class="raw-info">
+      <div class="raw-title" id="raw-name">No raw loaded — run a scan or open one</div>
+      <div class="raw-sub" id="raw-dir"></div>
+    </div>
+    <button id="raw-open">Open…</button>
   </div>
   <div class="progress-wrap" id="proc-prog-wrap">
     <progress id="proc-prog" value="0" max="1"></progress>
@@ -425,6 +457,7 @@
         <select id="box-size">
           <option value="full" selected>Full frame</option>
           <option value="half">Half frame</option>
+          <option value="pano">Panoramic</option>
         </select>
       </label>
       <button class="ghost" id="frame-add">+ Add</button>
@@ -464,7 +497,7 @@
 <div class="modal-backdrop hidden" id="browse-modal">
   <div class="modal">
     <div class="modal-head">
-      <h2>Choose output folder (on scanner host)</h2>
+      <h2 id="browse-title">Choose work folder (on scanner host)</h2>
       <button class="ghost" id="browse-close">✕</button>
     </div>
     <div class="browse-path" id="browse-cur"></div>
@@ -487,14 +520,12 @@
     el.className = 'msg' + (kind ? ' ' + kind : '');
   }
 
-  // Consume a POST SSE stream.  bodyData may be FormData or a plain object.
+  // Consume a POST SSE stream; bodyData is sent as JSON.
   async function postSSE(url, bodyData, onEvent) {
-    const isForm = bodyData instanceof FormData;
     const resp = await fetch(url, {
       method: 'POST',
-      ...(isForm
-        ? { body: bodyData }
-        : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyData) }),
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(bodyData),
     });
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
@@ -515,10 +546,7 @@
   }
 
   // ── Status polling ───────────────────────────────────────────────────────
-  let hasScanFile = false;
-  let uploadFile = null;
-  let outDir = null;          // chosen scan output dir (on host)
-  let outDirInit = false;     // seeded from server default yet?
+  let workDir = null;         // work folder the order folders go into (host)
 
   async function pollStatus() {
     try {
@@ -546,21 +574,19 @@
           ? `EEPROM: ${d.eeprom_unit.error} — scans are replayed`
           : 'No EEPROM archive yet — it is read when the scanner is warm; until then scans are replayed';
 
-      // Seed the output folder from the server default once.
-      if (!outDirInit && d.out_dir) {
-        outDirInit = true;
-        outDir = d.out_dir;
-        $('scan-out').textContent = outDir;
-      }
+      showWorkDir(d.work_dir, d.next_order);
 
       // If a scan file exists server-side and we haven't surfaced it yet
-      if (d.scan_file && !hasScanFile && !uploadFile) {
-        hasScanFile = true;
-        $('raw-name').textContent = d.scan_file;
-        $('raw-name').classList.add('set');
-        $('proc-btn').disabled = false;
-      }
     } catch {}
+  }
+
+  // The raw being processed: file name on top, its folder underneath.
+  function showRaw(path) {
+    const cut = path ? path.lastIndexOf('/') : -1;
+    $('raw-name').textContent = path ? path.slice(cut + 1) : 'No raw loaded — run a scan or open one';
+    $('raw-dir').textContent = path ? path.slice(0, cut) : '';
+    $('raw-slot').title = path || '';
+    $('raw-slot').classList.toggle('set', !!path);
   }
 
   setInterval(pollStatus, 2000);
@@ -611,10 +637,10 @@
     $('scan-prog').value = 0;
     $('scan-log').textContent = '';
     $('feed-prompt').classList.remove('show');
-    hasScanFile = false;
-
-    await postSSE('/api/scan', { out_dir: outDir }, ev => {
-      if (ev.type === 'log') {
+    await postSSE('/api/scan', {}, ev => {
+      if (ev.type === 'order') {
+        logLine('scan-log', `Order ${ev.order}: ${ev.path}`);
+      } else if (ev.type === 'log') {
         logLine('scan-log', ev.message);
       } else if (ev.type === 'feed') {
         $('feed-prompt').textContent = ev.message;
@@ -628,10 +654,7 @@
         $('scan-prog').value = $('scan-prog').max;
         $('scan-prog-label').textContent = `Complete — ${ev.mb} MB`;
         setMsg($('scan-msg'), `Scan complete (${ev.mb} MB)`, 'ok');
-        hasScanFile = true;
-        $('raw-name').textContent = ev.path || 'scan.raw';
-        $('raw-name').classList.add('set');
-        $('proc-btn').disabled = false;
+        if (ev.path) { showRaw(ev.path); processRaw(); }
       } else if (ev.type === 'error') {
         setMsg($('scan-msg'), ev.message, 'err');
       }
@@ -665,13 +688,31 @@
     $('scan-btn').disabled = false;
   });
 
-  // ── Output folder picker ───────────────────────────────────────────────────
+  // ── Work folder (each scan is an order folder in it) ────────────────────────
+  function showWorkDir(dir, nextOrder) {
+    if (dir) { workDir = dir; $('scan-out').textContent = dir; }
+    if (nextOrder) $('scan-order').textContent = `Next order: ${nextOrder}`;
+  }
+
   let browsePath = null;   // dir currently shown in the modal
+  let browseRaws = false;  // picking a .raw to open, not the work folder
+
+  function openBrowser(raws, start) {
+    browseRaws = raws;
+    $('browse-title').textContent = raws
+      ? 'Open a .raw (on scanner host)' : 'Choose work folder (on scanner host)';
+    $('browse-new').classList.toggle('hidden', raws);
+    $('browse-use').classList.toggle('hidden', raws);
+    $('browse-modal').classList.remove('hidden');
+    browseTo(start);
+  }
 
   async function browseTo(path) {
     setMsg($('browse-msg'), '');
-    const url = '/api/browse' + (path ? '?path=' + encodeURIComponent(path) : '');
-    const d = await fetch(url).then(r => r.json());
+    const q = new URLSearchParams();
+    if (path) q.set('path', path);
+    if (browseRaws) q.set('raws', 'true');
+    const d = await fetch('/api/browse?' + q).then(r => r.json());
     browsePath = d.path;
     $('browse-cur').textContent = d.path;
 
@@ -693,7 +734,15 @@
       it.onclick = () => browseTo(d.path.replace(/\/$/, '') + '/' + name);
       list.appendChild(it);
     }
-    if (!d.parent && !d.dirs.length) {
+    for (const name of d.files || []) {
+      const it = document.createElement('div');
+      it.className = 'browse-item';
+      it.innerHTML = '<span class="ic">◆</span><span></span>';
+      it.querySelector('span:last-child').textContent = name;
+      it.onclick = () => openRaw(d.path.replace(/\/$/, '') + '/' + name);
+      list.appendChild(it);
+    }
+    if (!d.parent && !d.dirs.length && !(d.files || []).length) {
       const e = document.createElement('div');
       e.className = 'browse-empty';
       e.textContent = '(no subfolders)';
@@ -701,10 +750,23 @@
     }
   }
 
-  $('scan-out-btn').addEventListener('click', () => {
-    $('browse-modal').classList.remove('hidden');
-    browseTo(outDir);
-  });
+  $('scan-out-btn').addEventListener('click', () => openBrowser(false, workDir));
+  $('raw-open').addEventListener('click', () => openBrowser(true, workDir));
+
+  // Open a raw where it is on the host and process it in place; its export
+  // saves the frame positions beside it (<raw>.crops.json) for next time.
+  async function openRaw(path) {
+    const resp = await fetch('/api/open', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) { setMsg($('browse-msg'), d.error || 'could not open', 'err'); return; }
+    showRaw(d.path);
+    $('browse-modal').classList.add('hidden');
+    processRaw();
+  }
   $('browse-close').addEventListener('click', () => {
     $('browse-modal').classList.add('hidden');
   });
@@ -712,10 +774,19 @@
     if (e.target === $('browse-modal')) $('browse-modal').classList.add('hidden');
   });
 
-  $('browse-use').addEventListener('click', () => {
+  $('browse-use').addEventListener('click', async () => {
     if (!browsePath) return;
-    outDir = browsePath;
-    $('scan-out').textContent = outDir;
+    const resp = await fetch('/api/workdir', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: browsePath }),
+    });
+    const d = await resp.json();
+    if (!resp.ok) {
+      setMsg($('browse-msg'), d.error || 'could not set the work folder', 'err');
+      return;
+    }
+    showWorkDir(d.work_dir, d.next_order);
     $('browse-modal').classList.add('hidden');
   });
 
@@ -735,23 +806,13 @@
     browseTo(d.path);   // descend into the freshly created folder
   });
 
-  // ── File upload ──────────────────────────────────────────────────────────
-  $('raw-upload').addEventListener('change', e => {
-    const f = e.target.files[0];
-    if (!f) return;
-    uploadFile = f;
-    $('raw-name').textContent = f.name;
-    $('raw-name').classList.add('set');
-    $('proc-btn').disabled = false;
-  });
-
   // ── Process = prescan (long preview + detected frame centres) ──────────────
   let meta = null;      // prescan metadata
   let crops = [];       // confirmed crops: {c: centre row, w: width} in full res
   let cur = 0;          // current frame index
 
-  $('proc-btn').addEventListener('click', async () => {
-    const btn = $('proc-btn');
+  async function processRaw() {
+    const btn = $('raw-open');
     btn.disabled = true;
     setMsg($('proc-msg'), '');
     $('proc-prog-wrap').classList.add('show');
@@ -760,10 +821,7 @@
     $('frames-section').classList.add('hidden');
     $('frames-grid').innerHTML = '';
 
-    const fd = new FormData();
-    if (uploadFile) fd.append('file', uploadFile);
-
-    await postSSE('/api/process', fd, ev => {
+    await postSSE('/api/process', {}, ev => {
       if (ev.type === 'progress') {
         $('proc-prog').value = ev.pct;
         $('proc-prog-label').textContent = ev.step;
@@ -772,22 +830,27 @@
         $('proc-prog-label').textContent = 'Done';
         meta = ev;
         startConfirm();
-        setMsg($('proc-msg'),
-               'Place frames — Enter adds the next box, Delete removes one', 'ok');
+        setMsg($('proc-msg'), ev.saved
+          ? `Restored ${ev.saved.centres.length} saved frames — adjust or export`
+          : 'Place frames — Enter adds the next box, Delete removes one', 'ok');
       } else if (ev.type === 'error') {
         setMsg($('proc-msg'), ev.message, 'err');
       }
     });
     btn.disabled = false;
-  });
+  }
 
   // ── Confirm frames (interactive crop placement) ────────────────────────────
   function startConfirm() {
-    // Start with a single box near the first detected frame; the operator adds
-    // the rest with Enter (and removes with Delete). The full ribbon is shown.
+    // Restore the boxes saved at this raw's last export, else start with a
+    // single box near the first detected frame; the operator adds the rest
+    // with Enter (and removes with Delete). The full ribbon is shown.
     const first = (meta.centres && meta.centres.length)
       ? meta.centres[0] : Math.round(meta.frame_w / 2);
-    crops = [{ c: first, w: boxSize() }];
+    const saved = meta.saved;
+    crops = saved
+      ? saved.centres.map((c, i) => ({ c, w: (saved.widths || [])[i] || meta.frame_w }))
+      : [{ c: first, w: boxSize() }];
     cur = 0;
     $('strip-img').src = '/api/preview?t=' + Date.now();
     $('strip-inner').style.width = meta.preview_w + 'px';
@@ -798,8 +861,10 @@
 
   const fullToPx = c => c * meta.scale;                 // full row -> preview x
   // Box width (full-res rows) for the size selected in the dropdown.
-  const boxSize = () => $('box-size').value === 'half'
-    ? Math.round(meta.frame_w / 2) : meta.frame_w;
+  // Full is 3000 (3:2 at 2000 tall), half 1500, panoramic 6000.
+  const BOX_MULT = { full: 1, half: 0.5, pano: 2 };
+  const boxSize = () =>
+    Math.round(meta.frame_w * (BOX_MULT[$('box-size').value] || 1));
 
   function renderStrip() {
     const inner = $('strip-inner');
@@ -832,7 +897,7 @@
   function go(d) { cur = Math.max(0, Math.min(crops.length - 1, cur + d)); renderStrip(); }
   function addFrame() {
     // Place the new box of the selected size immediately after the last one
-    // (edge to edge), so full and half frames tile correctly when added in a run.
+    // (edge to edge), so full, half and panoramic frames tile correctly when added in a run.
     const w = boxSize();
     const last = crops[crops.length - 1];
     const c = Math.min(meta.rows, last.c + Math.round((last.w + w) / 2));
@@ -851,11 +916,12 @@
     $('strip-wrap').focus();
   });
 
-  // click on the strip background to place the current crop there
+  // click on the strip background to start the current crop there (its
+  // leading edge, not its centre, lands on the click)
   $('strip-inner').addEventListener('click', e => {
     if (e.target.closest('.cropbox')) return;
     const rect = $('strip-inner').getBoundingClientRect();
-    crops[cur].c = Math.round((e.clientX - rect.left) / meta.scale);
+    crops[cur].c = Math.round((e.clientX - rect.left) / meta.scale + crops[cur].w / 2);
     renderStrip();
   });
 
@@ -885,8 +951,7 @@
 
     await postSSE('/api/export_frames',
       { centres: crops.map(c => Math.round(c.c)),
-        widths: crops.map(c => Math.round(c.w)),
-        rotate: parseInt($('rotate').value) },
+        widths: crops.map(c => Math.round(c.w)) },
       ev => {
         if (ev.type === 'progress') {
           $('exp-prog').value = ev.pct;
@@ -940,19 +1005,14 @@
   // ── Clear current scan + temp files ────────────────────────────────────────
   $('clear-btn').addEventListener('click', async () => {
     if (!confirm('Clear the current scan and delete decoded temp files?\n'
-                 + '(A scan.raw saved to your output folder is kept.)')) return;
+                 + '(Raws saved in the work folder are kept.)')) return;
     await fetch('/api/clear', { method: 'POST' });
     meta = null; crops = []; cur = 0;
     $('confirm-card').classList.add('hidden');
     $('frames-section').classList.add('hidden');
     $('frames-grid').innerHTML = '';
     $('frames-title').textContent = 'Frames';
-    $('raw-name').textContent = 'No file — run a scan or upload a .raw file';
-    $('raw-name').classList.remove('set');
-    $('proc-btn').disabled = true;
-    hasScanFile = false;
-    uploadFile = null;
-    $('raw-upload').value = '';
+    showRaw(null);
     setMsg($('proc-msg'), '');
     setMsg($('scan-msg'), '');
     $('proc-prog-wrap').classList.remove('show');

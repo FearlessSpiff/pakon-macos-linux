@@ -12,9 +12,11 @@ Endpoints
 ---------
 GET  /api/status                  scanner state + current job info
 POST /api/firmware                SSE — load firmware (cold device)
-POST /api/scan                    SSE — run a scan
+POST /api/scan                    SSE — run a scan (a new order in the work folder)
+POST /api/workdir                 set the work folder scans go into
 POST /api/eject                   SSE — run the film out of the transport
-POST /api/process                 SSE — decode .raw (upload or last scan)
+POST /api/open                    pick a .raw on the host (keeps its crops)
+POST /api/process                 SSE — decode the opened .raw or the last scan
 GET  /api/frames                  list decoded frames
 GET  /api/frames/{n}/thumb        JPEG thumbnail
 GET  /api/frames/{n}/tiff         16-bit TIFF download
@@ -28,11 +30,11 @@ import zipfile
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import Body, FastAPI, File, Form, UploadFile
+from fastapi import Body, FastAPI
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import eeprom
+from . import eeprom, orders
 from .decode import (WORK_DIR, PREVIEW_PATH, prescan, export_frames,
                      make_contact_sheet, find_eeprom_dir)
 
@@ -69,7 +71,6 @@ app = FastAPI(title="Pakon Scanner")
 _executor = ThreadPoolExecutor(max_workers=1)
 _state: dict = {
     "scan_path": None,   # Path to the last .raw file
-    "out_dir": Path.home(), # host dir the next scan writes scan.raw into
     "frames": [],        # list of {"index", "tiff", "thumb"} (after export)
     "prescan": None,     # prescan() metadata (ribbon path, base, pitch, centres…)
     "processing": False,
@@ -141,7 +142,8 @@ async def api_status():
         "state_error": scanner_error,
         "scan_file": sp.name if sp else None,
         "scan_bytes": sp.stat().st_size if sp and sp.exists() else 0,
-        "out_dir": str(_state["out_dir"]),
+        "work_dir": str(orders.work_dir()),
+        "next_order": orders.next_order(),
         "frame_count": len(_state["frames"]),
         "processing": _state["processing"],
         "eeprom": (lambda d: d.name if d else None)(_eeprom_dir()),
@@ -263,7 +265,7 @@ async def _run_streaming(args: list[str], out_path: Path | None, keys=None):
     yield {"type": "exit", "code": proc.returncode}
 
 
-async def _scan_stream(out_dir: Path):
+async def _scan_stream():
     if not REPLAY_BIN.exists():
         yield _sse({"type": "error",
                     "message": f"pakon_replay binary not found: {REPLAY_BIN}"})
@@ -277,7 +279,7 @@ async def _scan_stream(out_dir: Path):
         yield _sse({"type": "log", "message": "Detecting scanner model..."})
         model = await _detect_model()
     if model == "F-135" and eeprom_dir is not None:
-        async for ev in _scan_code_stream(out_dir, eeprom_dir):
+        async for ev in _scan_code_stream(eeprom_dir):
             yield ev
         return
     if model == "F-135":
@@ -306,10 +308,12 @@ async def _scan_stream(out_dir: Path):
                     "message": f"scan script not found: {pakscan}"})
         return
 
-    out_path, err = _prepare_out(out_dir)
+    out_path, err = _prepare_out()
     if err:
         yield _sse({"type": "error", "message": err})
         return
+    yield _sse({"type": "order", "path": str(out_path),
+                "order": out_path.parent.name})
 
     proc = await asyncio.create_subprocess_exec(
         str(REPLAY_BIN), "--scan", str(pakscan), "--image", str(out_path),
@@ -341,29 +345,26 @@ async def _scan_stream(out_dir: Path):
                     "message": f"scan failed (exit {proc.returncode})"})
 
 
-def _prepare_out(out_dir: Path) -> tuple[Path | None, str | None]:
+def _prepare_out() -> tuple[Path | None, str | None]:
+    """Open the next order (web/orders.py) and return its raw path."""
     try:
-        out_dir.mkdir(parents=True, exist_ok=True)
-    except Exception as exc:
-        return None, f"cannot create output dir {out_dir}: {exc}"
-    if not os.access(out_dir, os.W_OK):
-        return None, f"output dir not writable: {out_dir}"
-    out_path = out_dir / "scan.raw"
+        _, out_path = orders.new_order()
+    except OSError as exc:
+        return None, f"cannot create the order folder in {orders.work_dir()}: {exc}"
     _state["scan_path"] = out_path
-    _state["out_dir"] = out_dir
     _state["frames"] = []
-    if out_path.exists():
-        out_path.unlink()
     return out_path, None
 
 
-async def _scan_code_stream(out_dir: Path, eeprom_dir: Path):
+async def _scan_code_stream(eeprom_dir: Path):
     """F-135 scan with nothing replayed: setup, light calibration (open gate,
     keep the film out), motor start, then the operator feeds the film."""
-    out_path, err = _prepare_out(out_dir)
+    out_path, err = _prepare_out()
     if err:
         yield _sse({"type": "error", "message": err})
         return
+    yield _sse({"type": "order", "path": str(out_path),
+                "order": out_path.parent.name})
     yield _sse({"type": "log",
                 "message": f"Model: F-135 — scan built in code (EEPROM "
                            f"{eeprom_dir.name}). Calibrating: keep the film out "
@@ -431,17 +432,30 @@ async def api_eject():
 
 
 @app.post("/api/scan")
-async def api_scan(out_dir: str | None = Body(default=None, embed=True)):
-    target = Path(out_dir).expanduser() if out_dir else Path.home()
-    return StreamingResponse(_scan_stream(target), media_type="text/event-stream",
+async def api_scan():
+    return StreamingResponse(_scan_stream(), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
-# ── Host directory browser (scan output location) ──────────────────────────────
+# ── Work folder (where the order folders go) ────────────────────────────────────
+
+@app.post("/api/workdir")
+async def api_workdir(path: str = Body(..., embed=True)):
+    target = Path(path).expanduser()
+    if not target.is_dir():
+        return JSONResponse({"error": f"not a directory: {target}"}, status_code=400)
+    if not os.access(target, os.W_OK):
+        return JSONResponse({"error": f"not writable: {target}"}, status_code=400)
+    orders.set_work_dir(target.resolve())
+    return {"work_dir": str(orders.work_dir()), "next_order": orders.next_order()}
+
+
+# ── Host directory browser (work folder picker) ─────────────────────────────────
 
 @app.get("/api/browse")
-async def api_browse(path: str | None = None):
-    """List subdirectories of a host directory, for picking a scan output dir."""
+async def api_browse(path: str | None = None, raws: bool = False):
+    """List subdirectories of a host directory, for picking the work folder
+    (and its .raw files with raws=true, for opening one)."""
     base = Path(path).expanduser() if path else Path.home()
     try:
         base = base.resolve()
@@ -458,9 +472,17 @@ async def api_browse(path: str | None = None):
         )
     except PermissionError:
         dirs = []
+    files = []
+    if raws:
+        try:
+            files = sorted((p.name for p in base.iterdir()
+                            if p.is_file() and p.suffix.lower() == ".raw"),
+                           key=str.lower)
+        except PermissionError:
+            pass
 
     parent = str(base.parent) if base.parent != base else None
-    return {"path": str(base), "parent": parent, "dirs": dirs}
+    return {"path": str(base), "parent": parent, "dirs": dirs, "files": files}
 
 
 @app.post("/api/mkdir")
@@ -519,7 +541,7 @@ def _run_job(work, on_done):
 
 
 @app.post("/api/process")
-async def api_process(file: UploadFile | None = File(default=None)):
+async def api_process():
     """Prescan: cache the ribbon, render the preview strip, detect frame centres."""
     if _state["processing"]:
         async def _busy():
@@ -527,20 +549,12 @@ async def api_process(file: UploadFile | None = File(default=None)):
         return StreamingResponse(_busy(), media_type="text/event-stream",
                                  headers=_SSE_HEADERS)
 
-    if file is not None:
-        WORK_DIR.mkdir(parents=True, exist_ok=True)
-        upload_path = WORK_DIR / "upload.raw"
-        with open(upload_path, "wb") as f:
-            while chunk := await file.read(1 << 16):
-                f.write(chunk)
-        raw_path = upload_path
-        _state["scan_path"] = upload_path
-    elif _state["scan_path"] and _state["scan_path"].exists():
+    if _state["scan_path"] and _state["scan_path"].exists():
         raw_path = _state["scan_path"]
     else:
         async def _no_file():
             yield _sse({"type": "error",
-                        "message": "No raw file — run a scan or upload a .raw file"})
+                        "message": "No raw file — run a scan or open a .raw file"})
         return StreamingResponse(_no_file(), media_type="text/event-stream",
                                  headers=_SSE_HEADERS)
 
@@ -551,11 +565,53 @@ async def api_process(file: UploadFile | None = File(default=None)):
     def _done(meta):
         _state["prescan"] = meta
         # hand the browser everything it needs to place crops (no ribbon path)
-        return {"type": "done", **{k: meta[k] for k in (
-            "rows", "cols", "pitch", "frame_w", "centres",
-            "preview_w", "preview_h", "scale")}}
+        return {"type": "done", "saved": _load_crops(raw_path, meta["rows"]),
+                **{k: meta[k] for k in (
+                    "rows", "cols", "pitch", "frame_w", "centres",
+                    "preview_w", "preview_h", "scale")}}
 
     return _run_job(lambda prog: prescan(raw_path, progress=prog), _done)
+
+
+# ── Saved crop positions: <raw>.crops.json beside the raw ───────────────────────
+# Written at export, read back when the same raw is processed again, so the
+# operator's boxes come back.
+
+def _crops_path(raw: Path) -> Path:
+    return raw.with_name(raw.name + ".crops.json")
+
+
+def _load_crops(raw: Path, rows: int) -> dict | None:
+    path = _crops_path(raw)
+    try:
+        saved = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return None
+    # another decode of the raw (layout override, new ribbon code) can change
+    # the ribbon length; the positions would no longer line up
+    if not saved or saved.get("rows") != rows or not saved.get("centres"):
+        return None
+    return saved
+
+
+def _save_crops(raw: Path, rows: int, centres, widths) -> None:
+    try:
+        _crops_path(raw).write_text(json.dumps(
+            {"rows": rows, "centres": centres, "widths": widths}, indent=1))
+    except OSError as exc:
+        print(f"crop positions not saved: {exc}", flush=True)
+
+
+@app.post("/api/open")
+async def api_open(path: str = Body(..., embed=True)):
+    """Make a .raw on the host the file Process decodes (in place, no copy)."""
+    raw = Path(path).expanduser()
+    if raw.suffix.lower() != ".raw" or not raw.is_file():
+        return JSONResponse({"error": f"not a .raw file: {raw}"}, status_code=400)
+    _state["scan_path"] = raw.resolve()
+    _state["frames"] = []
+    _state["prescan"] = None
+    return {"path": str(_state["scan_path"])}
 
 
 @app.get("/api/preview")
@@ -571,7 +627,6 @@ async def api_preview():
 async def api_export_frames(
     centres: list[int] = Body(..., embed=True),
     widths: list[int] | None = Body(default=None, embed=True),
-    rotate: int = Body(default=90, embed=True),
 ):
     meta = _state["prescan"]
     if not meta:
@@ -587,16 +642,20 @@ async def api_export_frames(
 
     _state["frames"] = []
     _state["processing"] = True
+    raw = _state["scan_path"]
 
     def _work(prog):
         return export_frames(meta["ribbon"], meta["base"], centres,
-                             widths=widths, rotate=rotate,
+                             widths=widths,
                              frame_w=meta["frame_w"], progress=prog,
                              rpd_balance=meta.get("rpd_balance"),
                              roll_centres=meta.get("centres"))
 
     def _done(result):
         _state["frames"] = result
+        if raw is not None:
+            _save_crops(raw, meta["rows"], centres,
+                        widths or [meta["frame_w"]] * len(centres))
         return {"type": "done", "count": len(result)}
 
     return _run_job(_work, _done)
@@ -722,8 +781,8 @@ async def api_contact():
 async def api_clear():
     """Reset the current scan and delete temp artifacts under WORK_DIR.
 
-    Only files inside WORK_DIR (/tmp/pakon_web) are removed — a scan.raw saved
-    into a user-chosen output directory is left untouched.
+    Only files inside WORK_DIR (/tmp/pakon_web) are removed — the raws in the
+    work folder's order folders are left untouched.
     """
     removed = 0
     if WORK_DIR.exists():

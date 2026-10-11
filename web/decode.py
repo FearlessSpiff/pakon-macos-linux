@@ -118,7 +118,7 @@ def _sba_shifts(crops, oem, roll=None):
 RIBBON_PATH = WORK_DIR / "ribbon.npy"
 PREVIEW_PATH = WORK_DIR / "preview.jpg"
 _PREVIEW_H = 300               # target short-axis (frame height) of the preview
-_FRAME_W = 3000                # fixed crop width (long axis), capped at pitch
+_FRAME_W = 3000                # fixed crop width (long axis): 3000x2000, 3:2
 
 
 def _build_ribbon(raw_path, emit):
@@ -237,7 +237,7 @@ def prescan(raw_path, progress=None) -> dict:
                          [float(x) for x in balance[1]]]),
         "rows": int(rows), "cols": int(cols),
         "pitch": int(pitch),
-        "frame_w": int(min(_FRAME_W, pitch)),
+        "frame_w": _FRAME_W,
         "centres": centres,                # initial detected centres (full rows)
         "preview_w": int(prev_w), "preview_h": int(prev_h),
         "scale": float(scale),             # preview_x = full_row * scale
@@ -253,7 +253,7 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
     the TIFF and the JPEG; otherwise the Dmin inversion + rpd.pf JPEG render.
 
     `widths` is an optional per-frame crop width (full-res rows) parallel to
-    `centres` — lets the operator mix full- and half-frame boxes. When omitted,
+    `centres` — lets the operator mix full, half and panoramic boxes. When omitted,
     every crop uses `frame_w`.
 
     `roll_centres` are the prescan's detected frames: the OEM scene balance
