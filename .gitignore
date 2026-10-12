@@ -50,3 +50,6 @@ scratch/
 # Mac app build (packaging/macos/build.sh)
 /dist/
 /packaging/macos/.cache/
+
+# local GitHub release download counter
+/downloads.sh
