@@ -101,6 +101,14 @@ unsigned pakon_lc_smear(double black_bright, double black_dark,
  * the open-gate duty * 10^D. */
 extern const double pakon_lc_density_c41[PAKON_LC_NCH];
 
+/* Film types the scan supports, and their film-base densities (R, G, B, IR)
+ * from the same table: colour negative above; silver B&W shares the OEM's
+ * "other" row (slide and silver B&W) 0 / 0.03 / 0 / 0.08. */
+typedef enum { PAKON_FILM_C41 = 0, PAKON_FILM_BW } pakon_film;
+extern const double pakon_lc_density_bw[PAKON_LC_NCH];
+const double *pakon_lc_film_density(pakon_film film);
+const char *pakon_film_name(pakon_film film);   /* "c41" / "bw" */
+
 /* Next A/D offset from a black-pixel mean: off + round((mean - 300) * -0.0133929)
  * (TLB.dll). When that rounds to no change while the mean is still outside
  * 300 +/- 32 (e.g. 334: step -0.46), step one code toward the target instead;

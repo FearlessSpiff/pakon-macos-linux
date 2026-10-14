@@ -37,6 +37,7 @@ from pakon_image import (  # noqa: E402
     _c41_lut,
     load_neg_matrix,
     render_oem,
+    to_grey,
     RpdLut,
     apply_flat_field,
     find_flat_field,
@@ -199,9 +200,14 @@ def _build_ribbon(raw_path, emit):
     return rgb
 
 
-def prescan(raw_path, progress=None) -> dict:
+FILMS = ("c41", "bw")   # colour negative, silver B&W
+
+
+def prescan(raw_path, progress=None, film="c41") -> dict:
     """Stage 1. Build + cache the ribbon, render the long preview strip, and
-    auto-detect initial frame centres. Returns a metadata dict (all JSON-able)."""
+    auto-detect initial frame centres. Returns a metadata dict (all JSON-able).
+    film="bw" renders silver B&W: the same inversion, then grey."""
+    grey = film == "bw"
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     clear_work()                          # the last roll's frames
 
@@ -239,9 +245,11 @@ def prescan(raw_path, progress=None) -> dict:
         # frame's own.
         pos = render_oem(small, *oem, balance=(
             balance if shifts is None else
-            (np.ones(3, np.float32), shifts.mean(axis=0))))
+            (np.ones(3, np.float32), shifts.mean(axis=0))), grey=grey)
     else:
         pos = invert_c41(small, base, _c41_lut())        # quick sRGB positive
+        if grey:
+            pos = to_grey(pos)
     strip = np.rot90((pos >> 8).astype(np.uint8), k=1)  # long axis -> horizontal x
     Image.fromarray(strip).save(str(PREVIEW_PATH), "JPEG", quality=85)
     prev_w, prev_h = strip.shape[1], strip.shape[0]     # PIL (w,h)
@@ -260,12 +268,13 @@ def prescan(raw_path, progress=None) -> dict:
         "centres": centres,                # initial detected centres (full rows)
         "preview_w": int(prev_w), "preview_h": int(prev_h),
         "scale": float(scale),             # preview_x = full_row * scale
+        "film": film,
     }
 
 
 def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
                   frame_w=_FRAME_W, progress=None, rpd_balance=None,
-                  roll_centres=None) -> list[dict]:
+                  roll_centres=None, film="c41") -> list[dict]:
     """Stage 2. Crop the cached ribbon at each confirmed centre, invert and
     render, write TIFF/JPEG. With the scanner's EEPROM archive and rpd.pf this
     is the OEM F-135 colour path (density LUT -> NegMatrix -> rpd.pf), for both
@@ -277,7 +286,10 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
 
     `roll_centres` are the prescan's detected frames: the OEM scene balance
     weighs the exported frames against the whole roll, so a few similar
-    frames exported alone are not pushed toward their own average."""
+    frames exported alone are not pushed toward their own average.
+
+    film="bw" (silver B&W) writes 16-bit grey TIFFs and grey JPEGs."""
+    grey = film == "bw"
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     clear_work()                          # the last export's frames
 
@@ -321,11 +333,13 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
             else:
                 bal = (None if rpd_balance is None else
                        tuple(np.asarray(v, np.float32) for v in rpd_balance))
-            pos = render_oem(part, *oem, balance=bal)
+            pos = render_oem(part, *oem, balance=bal, grey=grey)
             rendered = (pos >> 8).astype(np.uint8)
         else:
             pos = invert_c41(part, base, lut)         # 16-bit sRGB positive
-            rendered = (render_jpeg(pos, str(RPD_PROFILE)) if use_rpd
+            if grey:
+                pos = to_grey(pos)
+            rendered = (render_jpeg(pos, str(RPD_PROFILE)) if use_rpd and not grey
                         else (pos >> 8).astype(np.uint8))
 
         raw_tiff = WORK_DIR / f"frame_{i + 1:02d}_raw.tif"
@@ -334,7 +348,8 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
         thumb_path = WORK_DIR / f"thumb_{i + 1:02d}.jpg"
         # raw negative (uninverted, 16-bit) — for inverting in another tool
         tifffile.imwrite(str(raw_tiff), part, photometric="rgb")
-        tifffile.imwrite(str(pos_tiff), pos, photometric="rgb")
+        tifffile.imwrite(str(pos_tiff), pos,
+                         photometric="minisblack" if grey else "rgb")
         Image.fromarray(rendered).save(str(jpg_path), "JPEG", quality=92)
         step = max(1, max(rendered.shape[0] // 600, rendered.shape[1] // 600))
         Image.fromarray(rendered[::step, ::step]).save(str(thumb_path),

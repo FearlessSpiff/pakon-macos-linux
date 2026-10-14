@@ -225,7 +225,7 @@ that stall, and stops.
 | `--scan-sm FILE` | replays setup to motor start, then reads with the event service; scans a whole strip (F-135) |
 | `--setup --eeprom-dir DIR [--teardown]` | code-built setup (and teardown), Base 16 |
 | `--calib-probe` / `--light-cal --eeprom-dir DIR` | static line levels / light calibration in code (F-135, open gate) |
-| `--scan-code --eeprom-dir DIR [--image OUT]` | scan with nothing replayed (F-135, Base 16 + IR); feed the film once the motor runs |
+| `--scan-code --eeprom-dir DIR [--image OUT] [--film c41\|bw]` | scan with nothing replayed (F-135, Base 16 + IR); feed the film once the motor runs; `--film bw` = silver B&W duties |
 | `advance.pakscan --steps N` | replayed advance loop; motor address probed per model (`resources/f135plus/advance.pakscan` for the Plus) |
 | `--advance [--advance-seconds N]` | timed transport run to push a strip out, standalone or after `--scan`; model-specific captured speed |
 | Ctrl-C during `--scan`/`--advance` | first press stops and replays the teardown / stop writes; the run reports failure |

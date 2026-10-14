@@ -237,10 +237,21 @@ slide. Both change the scan itself, not just the decode.
 **Film type.** Scan side: the scan LED duties are the calibrated duties ×
 10^density, with `TLB.dll`'s film-base densities (R/G/B/IR): colour negative
 0.144/0.40/0.715/0, B&W C-41 0.10/0.25/0.25/0.08, other (slide, silver B&W)
-0/0.03/0/0.08; `--scan-code` uses colour negative only. IR/ICE must be off for
-silver B&W. Decode side: colour negative uses the EEPROM NegMatrix, slide the
-PosMatrix (no inversion), B&W the NegMatrix then grey; `pakon_image.py` has
-`--invert-c41` only. About half a day; testing needs a strip of each type.
+0/0.03/0/0.08. IR/ICE must be off for silver B&W. Decode side: colour negative
+uses the EEPROM NegMatrix, slide the PosMatrix (no inversion), B&W the
+NegMatrix then grey.
+
+- **Silver B&W — done 2026-10-13, untested on film:** `pakon_replay
+  --scan-code --film bw` calibrates and scans with the "other" densities
+  (`pakon_lc_density_bw`) and records `"film": "bw"` in `RAW.flat.json`. The
+  scan stays in the Base 16 + IR mode (the IR lane is scanned and ignored;
+  ICE is not implemented), so no untested IR-off timing is needed.
+  Decode: `render_oem(..., grey=True)` averages the three RPD channels, then
+  `rpd.pf`, then Rec. 709 luma; `pakon_image.py --bw`; web: a film type on
+  Scan and Process, kept per raw in `RAW.film`. Needs a strip of silver film
+  to check the duties and the end-of-roll detection (clear B&W base should
+  read ~60–70% of the open gate, under the white threshold).
+- Left: B&W C-41 (0.10/0.25/0.25/0.08), slide (PosMatrix, `ColRevLut`).
 
 ## Feature work (independent of the replay-free steps)
 

@@ -134,6 +134,17 @@ unsigned pakon_lc_smear(double black_bright, double black_dark,
 }
 
 const double pakon_lc_density_c41[PAKON_LC_NCH] = { 0.144, 0.40, 0.715, 0.0 };
+const double pakon_lc_density_bw[PAKON_LC_NCH] = { 0.0, 0.03, 0.0, 0.08 };
+
+const double *pakon_lc_film_density(pakon_film film)
+{
+    return film == PAKON_FILM_BW ? pakon_lc_density_bw : pakon_lc_density_c41;
+}
+
+const char *pakon_film_name(pakon_film film)
+{
+    return film == PAKON_FILM_BW ? "bw" : "c41";
+}
 
 int pakon_lc_offset_next(int offset, double black_mean)
 {
