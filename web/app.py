@@ -23,6 +23,8 @@ GET  /api/frames/{n}/tiff         16-bit TIFF download
 POST /api/save                    SSE — save the frames to the work folder (jpeg|tiff|raw|contact)
 POST /api/reveal                  show a saved export folder in Finder (macOS)
 POST /api/update/open             open the newer release's page in the browser
+POST /api/telemetry/consent       the user's crash-report / usage-statistics choice
+POST /api/telemetry/page|error    a page opened / a page error (web/telemetry.py)
 """
 import asyncio
 import json
@@ -30,6 +32,8 @@ import os
 import shutil
 import subprocess
 import sys
+import time
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -37,7 +41,7 @@ from fastapi import Body, FastAPI
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import eeprom, orders, update
+from . import eeprom, orders, telemetry, update
 from .decode import (WORK_DIR, PREVIEW_PATH, FILMS, prescan, export_frames,
                      make_contact_sheet, find_eeprom_dir, clear_work)
 
@@ -105,6 +109,11 @@ async def _startup_clear():
 
 
 @app.on_event("startup")
+async def _startup_telemetry():
+    telemetry.start()
+
+
+@app.on_event("startup")
 async def _startup_eeprom():
     # Read a warm scanner's EEPROM at launch, in the background.
     asyncio.create_task(asyncio.to_thread(eeprom.sync))
@@ -158,8 +167,45 @@ async def api_status():
         "eeprom": (lambda d: d.name if d else None)(_eeprom_dir()),
         "eeprom_unit": eeprom.status(),
         "firmware_hex": _fw_hex_available(),
-        "update": update.status(),        # a newer release, or None
+        "update": _update_status(),       # a newer release, or None
+        "telemetry": telemetry.consent(),
+        "version": update.current(),      # the app's, None from a checkout
     }
+
+
+_update_seen: set = set()
+
+
+def _update_status():
+    st = update.status()
+    if st and st["latest"] not in _update_seen:     # once per run and version
+        _update_seen.add(st["latest"])
+        telemetry.event("update_shown", latest=st["latest"])
+    return st
+
+
+async def _reported(stream, name: str, page: str, **props):
+    """Pass an SSE stream through, reporting how it ended: `<name>_done`
+    (usage) or a `<Name>Failed` error with the last log lines (crash
+    reports). The scanner's own log is the best clue to a failure on
+    someone else's unit."""
+    t0, tail = time.monotonic(), deque(maxlen=40)
+    async for chunk in stream:
+        yield chunk
+        try:
+            ev = json.loads(chunk[len("data: "):])
+        except ValueError:
+            continue
+        if ev.get("type") in ("log", "feed"):
+            tail.append(ev.get("message", ""))
+            if ev.get("message", "").startswith("Model: "):
+                props["model"] = ev["message"].split()[1]
+        elif ev.get("type") == "done":
+            telemetry.event(f"{name}_done", page, seconds=round(time.monotonic() - t0),
+                            **({"mb": ev["mb"]} if "mb" in ev else {}), **props)
+        elif ev.get("type") == "error":
+            telemetry.error(f"{name.capitalize()}Failed", ev.get("message", ""),
+                            "\n".join(tail), page)
 
 
 # ── Firmware load ─────────────────────────────────────────────────────────────
@@ -202,7 +248,8 @@ async def _firmware_stream():
 
 @app.post("/api/firmware")
 async def api_firmware():
-    return StreamingResponse(_firmware_stream(), media_type="text/event-stream",
+    return StreamingResponse(_reported(_firmware_stream(), "firmware", "scan"),
+                             media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -446,7 +493,8 @@ async def _eject_stream():
 
 @app.post("/api/eject")
 async def api_eject():
-    return StreamingResponse(_eject_stream(), media_type="text/event-stream",
+    return StreamingResponse(_reported(_eject_stream(), "eject", "scan"),
+                             media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -454,7 +502,8 @@ async def api_eject():
 async def api_scan(film: str = Body("c41", embed=True)):
     if film not in FILMS:
         return JSONResponse({"error": f"unknown film type: {film}"}, status_code=400)
-    return StreamingResponse(_scan_stream(film), media_type="text/event-stream",
+    return StreamingResponse(_reported(_scan_stream(film), "scan", "scan", film=film),
+                             media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -527,9 +576,12 @@ async def api_mkdir(path: str = Body(...), name: str = Body(...)):
 
 # ── Stage 1: prescan (long preview + detected frame centres) ───────────────────
 
-def _run_job(work, on_done):
+def _run_job(work, on_done, name: str, page: str, stats=None):
     """Run `work(progress)` in the executor, stream progress as SSE, and call
-    on_done(result) to build the final 'done' event. Returns a StreamingResponse."""
+    on_done(result) to build the final 'done' event. Returns a StreamingResponse.
+    Reports `<name>_done` with stats(result) (usage) or the exception (crash
+    reports)."""
+    t0 = time.monotonic()
     loop = asyncio.get_event_loop()
     queue: asyncio.Queue = asyncio.Queue()
 
@@ -541,7 +593,11 @@ def _run_job(work, on_done):
         try:
             result = work(_progress)
             loop.call_soon_threadsafe(queue.put_nowait, on_done(result))
+            telemetry.event(f"{name}_done", page,
+                            seconds=round(time.monotonic() - t0),
+                            **(stats(result) if stats else {}))
         except Exception as exc:
+            telemetry.exception(exc, name, page)
             loop.call_soon_threadsafe(
                 queue.put_nowait, {"type": "error", "message": str(exc)})
 
@@ -598,7 +654,9 @@ async def api_process(film: str | None = Body(None, embed=True)):
                     "rows", "cols", "pitch", "frame_w", "centres",
                     "preview_w", "preview_h", "scale", "film")}}
 
-    return _run_job(lambda prog: prescan(raw_path, progress=prog, film=film), _done)
+    return _run_job(lambda prog: prescan(raw_path, progress=prog, film=film), _done,
+                    "process", "process",
+                    lambda m: {"film": film, "frames": len(m["centres"])})
 
 
 # ── Film type of a raw: <raw>.film beside it ──────────────────────────────────────
@@ -719,7 +777,8 @@ async def api_export_frames(
                         widths or [meta["frame_w"]] * len(centres))
         return {"type": "done", "count": len(result)}
 
-    return _run_job(_work, _done)
+    return _run_job(_work, _done, "export", "frames",
+                    lambda r: {"frames": len(r), "film": meta.get("film", "c41")})
 
 
 # ── Frame access ──────────────────────────────────────────────────────────────
@@ -836,7 +895,8 @@ async def api_save(fmt: str = Body(..., embed=True)):
                                  headers=_SSE_HEADERS)
     _state["processing"] = True
     return _run_job(lambda prog: _save_frames(frames, fmt, raw, prog),
-                    lambda result: {"type": "done", **result})
+                    lambda result: {"type": "done", **result}, "save", "export",
+                    lambda r: {"format": fmt, "frames": r["count"]})
 
 
 @app.post("/api/reveal")
@@ -858,10 +918,34 @@ async def api_update_open():
     cannot); elsewhere the page opens the returned URL itself."""
     st = update.status()
     url = st["url"] if st else update.RELEASES + "/latest"
+    telemetry.event("update_download", latest=st["latest"] if st else None)
     if sys.platform == "darwin":
         subprocess.Popen(["open", url])
         return {"opened": True, "url": url}
     return {"opened": False, "url": url}
+
+
+# ── Crash reports and usage statistics (web/telemetry.py) ─────────────────────
+
+@app.post("/api/telemetry/consent")
+async def api_telemetry_consent(usage: bool = Body(...), crashes: bool = Body(...)):
+    state = telemetry.set_consent(usage, crashes)
+    telemetry.event("consent", usage=usage, crashes=crashes)
+    return state
+
+
+@app.post("/api/telemetry/page")
+async def api_telemetry_page(page: str = Body(..., embed=True)):
+    telemetry.page(page)
+    return {"ok": True}
+
+
+@app.post("/api/telemetry/error")
+async def api_telemetry_error(message: str = Body(""), stack: str = Body(""),
+                              page: str = Body("")):
+    """A JavaScript error in the page."""
+    telemetry.error("PageError", message, stack, page)
+    return {"ok": True}
 
 
 # ── Static files (must be last) ───────────────────────────────────────────────

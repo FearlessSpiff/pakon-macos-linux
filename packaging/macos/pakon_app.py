@@ -27,12 +27,19 @@ if not FROZEN:
 
 HOME = Path.home()
 if FROZEN:
-    # The version the new-build check (web/update.py) compares against.
+    # The version the new-build check (web/update.py) compares against, and
+    # where crash reports / usage statistics go (web/telemetry.py; only
+    # release builds carry these, see build.sh).
     import plistlib
     try:
         with open(Path(sys.executable).parents[1] / "Info.plist", "rb") as f:
-            os.environ.setdefault("PAKON_VERSION",
-                                  plistlib.load(f)["CFBundleShortVersionString"])
+            info = plistlib.load(f)
+        os.environ.setdefault("PAKON_VERSION", info["CFBundleShortVersionString"])
+        for key, env in (("PakonRybbitURL", "PAKON_RYBBIT_URL"),
+                         ("PakonRybbitSiteID", "PAKON_RYBBIT_SITE_ID"),
+                         ("PakonRybbitDomain", "PAKON_RYBBIT_DOMAIN")):
+            if info.get(key):
+                os.environ.setdefault(env, info[key])
     except (OSError, KeyError, ValueError):
         pass
     os.environ.setdefault("PAKON_DATA", str(HOME / "Library/Application Support/Pakon"))

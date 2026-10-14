@@ -57,6 +57,25 @@ This submits the `.dmg`, waits for Apple, staples the ticket and checks it with
 name: the website's Download button points at
 `releases/latest/download/Pakon.dmg`.
 
+### Crash reports and usage statistics (Rybbit)
+
+The app can send opt-in crash reports and usage statistics to a
+[Rybbit](https://rybbit.com) instance (`web/telemetry.py`). Where they go is
+set when building, never in the code, so a build anyone makes from this repo
+sends nothing and never asks. For a release, copy `release.env.example` to
+`release.env` (git-ignored) and fill in:
+
+| Variable | What |
+|---|---|
+| `PAKON_RYBBIT_URL` | the Rybbit instance, e.g. `https://rybbit.example.com` |
+| `PAKON_RYBBIT_SITE_ID` | the Rybbit site's ID |
+| `PAKON_RYBBIT_DOMAIN` | the domain the Rybbit site was created with |
+
+`build.sh` reads `release.env` (or the same variables from the environment),
+prints `reports: on` or `reports: off`, and writes them into the app's
+`Info.plist`; all three are needed. No API key: the app sends to Rybbit's
+public tracking endpoint, and a key would be readable by anyone with the app.
+
 Installed apps check the latest release on launch (and every 6 hours) and
 show a banner when it is newer than their own version (`web/update.py`), so
 tag releases `vX.Y.Z` with the same number passed to `build.sh`, and do not

@@ -271,6 +271,45 @@
     }
     .update-bar button:not(.ghost) { background: var(--border); color: var(--accent); }
 
+    /* ── Consent popup: crash reports / usage statistics ── */
+    .consent-pop {
+      position: fixed; right: 20px; bottom: 96px; z-index: 60;   /* above the space bar */
+      width: 340px; max-width: calc(100vw - 32px);
+      background: var(--surface); border: 2px solid var(--border);
+      box-shadow: var(--shadow); padding: 16px 16px 14px;
+    }
+    .consent-pop h2 {
+      font-family: 'Space Grotesk', sans-serif; font-size: 1rem; font-weight: 700;
+      text-transform: uppercase; margin-bottom: 6px;
+    }
+    .consent-pop p { font-size: 0.82rem; line-height: 1.45; margin-bottom: 10px; }
+    .consent-opts { display: grid; gap: 6px; margin-bottom: 8px; }
+    .consent-opts label {
+      display: flex; gap: 8px; align-items: center; cursor: pointer;
+      font-family: 'IBM Plex Mono', monospace; font-size: 0.78rem; font-weight: 600;
+      text-transform: uppercase;
+    }
+    .consent-opts input { width: 16px; height: 16px; accent-color: var(--border); }
+    .consent-pop details { font-size: 0.76rem; line-height: 1.45; color: var(--muted); margin-bottom: 12px; }
+    .consent-pop summary { cursor: pointer; color: var(--text); font-weight: 600; }
+    .consent-pop details ul { margin: 6px 0 0 16px; }
+    .consent-pop .row { gap: 8px; }
+    @media (max-width: 560px) { .consent-pop { right: 16px; left: 16px; width: auto; } }
+
+    /* ── Settings space ── */
+    .settings-list { display: grid; gap: 10px; margin-bottom: 14px; max-width: 720px; }
+    label.setting {
+      display: flex; gap: 12px; align-items: flex-start; cursor: pointer;
+      border: 2px solid var(--border); background: var(--surface2); padding: 12px 14px;
+      font-size: 0.86rem; line-height: 1.45;
+    }
+    label.setting input { width: 18px; height: 18px; margin-top: 2px; accent-color: var(--border); flex-shrink: 0; }
+    label.setting strong {
+      display: block; font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; text-transform: uppercase;
+    }
+    label.setting:has(input:disabled) { opacity: 0.5; cursor: not-allowed; }
+    .settings-note { font-size: 0.8rem; color: var(--muted); max-width: 72ch; line-height: 1.45; margin-bottom: 8px; }
+
     /* ── Home space: welcome + the two ways in ── */
     .welcome { padding: 40px 32px; }
     .welcome h2 { font-size: 2rem; letter-spacing: -0.02em; margin-bottom: 8px; }
@@ -730,6 +769,60 @@
 
 </section>
 
+<!-- ══ Settings space ══ -->
+<section class="space" id="space-settings" role="tabpanel" aria-labelledby="tab-settings">
+
+<div class="card">
+  <h2>Privacy</h2>
+  <p class="lead">Anonymous reports to the developer show what breaks on scanners other than the
+    one Pakon was built on, and which parts of the app people use.</p>
+  <div class="settings-list">
+    <label class="setting"><input type="checkbox" id="set-crashes">
+      <span><strong>Crash reports</strong>When something fails: the error, and for a failed scan
+        the scanner's last log lines.</span></label>
+    <label class="setting"><input type="checkbox" id="set-usage">
+      <span><strong>Usage statistics</strong>Which pages you open, and how long scans, processing
+        and exports take, with the film type and number of frames.</span></label>
+  </div>
+  <p class="settings-note">Never sent: your photos, file or folder names, or your scanner's serial
+    number. Reports carry a random ID, which turning both off forgets.</p>
+  <p class="settings-note hidden" id="privacy-host">Reports go to a self-hosted
+    <a href="https://rybbit.com" target="_blank" rel="noopener">Rybbit</a>
+    (open-source analytics) run by Pakon's developer, not to a third party.</p>
+  <p class="settings-note hidden" id="privacy-off">This build of Pakon doesn't send reports.</p>
+  <span class="msg" id="set-msg"></span>
+</div>
+
+<div class="card">
+  <h2>About</h2>
+  <p class="settings-note">Pakon <span id="about-version">(from source)</span>. Unofficial,
+    independent software, not affiliated with or endorsed by Kodak or Pakon.</p>
+</div>
+
+</section>
+
+<!-- Crash reports / usage statistics: asked once; Settings changes it -->
+<div class="consent-pop hidden" id="consent-card" role="dialog" aria-labelledby="consent-title">
+  <h2 id="consent-title">Help improve Pakon</h2>
+  <p>Send anonymous reports so problems on other scanners get fixed. No photos, nothing personal. You can change this in Settings.</p>
+  <div class="consent-opts">
+    <label><input type="checkbox" id="consent-crashes" checked> Crash reports</label>
+    <label><input type="checkbox" id="consent-usage" checked> Usage statistics</label>
+  </div>
+  <details>
+    <summary>What's sent?</summary>
+    <ul>
+      <li>Crash reports: the error, and for a failed scan the scanner's last log lines.</li>
+      <li>Usage: pages opened, how long scans, processing and exports take, film type, frame count.</li>
+      <li>Never: photos, file or folder names, your scanner's serial number. Reports carry a random ID.</li>
+    </ul>
+  </details>
+  <div class="row">
+    <button id="consent-save">Save</button>
+    <button class="ghost" id="consent-none">No thanks</button>
+  </div>
+</div>
+
 <!-- Space switcher, along the bottom like a Resolve page bar -->
 <nav class="spaces" role="tablist" aria-label="Workspace">
   <button role="tab" id="tab-home" data-space="home" aria-controls="space-home" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3 11l9-7 9 7"/><path d="M5 9.5V20h14V9.5"/><path d="M10 20v-6h4v6"/></svg>Home</button>
@@ -737,6 +830,7 @@
   <button role="tab" id="tab-process" data-space="process" aria-controls="space-process" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="5" width="18" height="14"/><rect x="6" y="8" width="7" height="8"/><path d="M16 9h2M16 12h2M16 15h2"/></svg>Process</button>
   <button role="tab" id="tab-frames" data-space="frames" aria-controls="space-frames" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="2" y="7" width="9" height="10"/><rect x="13" y="7" width="9" height="10"/><path d="M2 4h20M2 20h20"/></svg>Frames</button>
   <button role="tab" id="tab-export" data-space="export" aria-controls="space-export" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 15v5h16v-5"/></svg>Export</button>
+  <button role="tab" id="tab-settings" data-space="settings" aria-controls="space-settings" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M2 12h3M19 12h3M4.9 19.1L7 17M17 7l2.1-2.1"/></svg>Settings</button>
 </nav>
 
 <!-- Folder picker -->
@@ -828,6 +922,8 @@
 
       showWorkDir(d.work_dir, d.next_order);
       showUpdate(d.update);
+      showConsent(d.telemetry);
+      if (d.version) $('about-version').textContent = d.version;
 
       // If a scan file exists server-side and we haven't surfaced it yet
     } catch {
@@ -835,6 +931,54 @@
       $('home-state').textContent = 'Scanner status unknown';
     }
   }
+
+  // ── Crash reports / usage statistics (web/telemetry.py) ─────────────────
+  function showConsent(t) {
+    const on = !!(t && t.available);
+    $('consent-card').classList.toggle('hidden', !on || t.asked);
+    $('privacy-off').classList.toggle('hidden', on);
+    $('privacy-host').classList.toggle('hidden', !on);
+    for (const [id, key] of [['set-crashes', 'crashes'], ['set-usage', 'usage']]) {
+      $(id).disabled = !on;
+      $(id).checked = on && t[key];
+    }
+  }
+  async function saveConsent(usage, crashes) {
+    const d = await fetch('/api/telemetry/consent', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ usage, crashes }),
+    }).then(r => r.json());
+    showConsent(d);
+    if (usage) report('page', { page: currentSpace });
+    return d;
+  }
+  $('consent-save').addEventListener('click', () =>
+    saveConsent($('consent-usage').checked, $('consent-crashes').checked));
+  $('consent-none').addEventListener('click', () => saveConsent(false, false));
+  for (const id of ['set-crashes', 'set-usage'])
+    $(id).addEventListener('change', async () => {
+      await saveConsent($('set-usage').checked, $('set-crashes').checked);
+      setMsg($('set-msg'), 'Saved', 'ok');
+    });
+
+  // Page switches and page errors go to the local server, which sends them
+  // only when the user agreed (and never from a checkout).
+  function report(kind, body) {
+    fetch('/api/telemetry/' + kind, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body), keepalive: true,
+    }).catch(() => {});
+  }
+  window.addEventListener('error', e => report('error', {
+    message: e.message || String(e.error),
+    stack: (e.error && e.error.stack) || `${e.filename}:${e.lineno}:${e.colno}`,
+    page: currentSpace || '',
+  }));
+  window.addEventListener('unhandledrejection', e => report('error', {
+    message: 'unhandled rejection: ' + ((e.reason && e.reason.message) || String(e.reason)),
+    stack: (e.reason && e.reason.stack) || '',
+    page: currentSpace || '',
+  }));
 
   // ── New build ────────────────────────────────────────────────────────────
   // Shown until Later; it comes back at the next launch.
@@ -867,6 +1011,7 @@
   // ── Spaces ───────────────────────────────────────────────────────────────
   let currentSpace = null;
   function showSpace(name) {
+    if (name !== currentSpace) report('page', { page: name });
     currentSpace = name;
     document.querySelectorAll('.space').forEach(s =>
       s.classList.toggle('active', s.id === 'space-' + name));

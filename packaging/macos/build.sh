@@ -8,10 +8,25 @@
 # this Mac. Notarization runs when PAKON_NOTARY_PROFILE names a profile made
 # with `xcrun notarytool store-credentials`. See packaging/macos/README.md.
 #
+# Crash reports and usage statistics (web/telemetry.py, opt-in) go to a Rybbit
+# instance only when PAKON_RYBBIT_URL, PAKON_RYBBIT_SITE_ID and
+# PAKON_RYBBIT_DOMAIN are set, from the environment or from release.env next to
+# this script (git-ignored; see release.env.example). Without them the app
+# never sends any.
+#
 # Output: dist/macos/Pakon.app and dist/macos/Pakon.dmg
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+if [ -f "$HERE/release.env" ]; then
+    set -a; . "$HERE/release.env"; set +a
+fi
+if [ -n "${PAKON_RYBBIT_URL:-}" ] && [ -n "${PAKON_RYBBIT_SITE_ID:-}" ] \
+        && [ -n "${PAKON_RYBBIT_DOMAIN:-}" ]; then
+    echo "reports: on (opt-in) to $PAKON_RYBBIT_URL, site $PAKON_RYBBIT_DOMAIN"
+else
+    echo "reports: off (no PAKON_RYBBIT_URL / _SITE_ID / _DOMAIN)"
+fi
 REPO="$(cd "$HERE/../.." && pwd)"
 VERSION="${1:-0.1.0}"
 CACHE="$HERE/.cache"

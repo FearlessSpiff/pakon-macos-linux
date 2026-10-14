@@ -23,6 +23,9 @@ frame_*.tif
 frame_*.png
 *.raw
 
+# release-only build settings (packaging/macos/release.env.example)
+packaging/macos/release.env
+
 # python cruft
 __pycache__/
 *.pyc
