@@ -398,10 +398,8 @@ Open work is tracked in [GitHub issues](https://github.com/jorshhh/pakon-macos/i
 - **Scan options:** resolution Base 4 / 8 / 16 (#17); B&W and slide film (#18).
 - **Image:** Digital ICE dust and scratch removal (#26); the remaining OEM
   scene-balance stages (#22); DX barcode frame numbers (#24).
-- **Web UI:** progress while RAW/TIFF exports are built (#23).
 - **Distribution:** installable release builds for macOS, Windows and Linux
   (#25).
-- **Open hardware questions:** #19, #20, #21.
 
 ## Firmware
 
