@@ -388,6 +388,33 @@ control and runs the Python image pipeline in a thread pool. Build the C tools
 first (`cmake --build build`). The `rpd.pf` profile (in `profiles/`) is used for
 the rendered JPEGs.
 
+## Privacy
+
+The released Mac app asks once, when it first opens, whether it may send
+anonymous **crash reports** and **usage statistics**; nothing is sent until
+you say yes, each has its own switch, and the Settings page turns either
+off. They go to the developer's self-hosted [Rybbit](https://rybbit.com)
+(open-source analytics), not to a third party (`web/telemetry.py`).
+
+- Crash reports: the error message and stack trace (Python or the page), and
+  for a failed scan, firmware load or eject the last lines of the scanner
+  log; a hard crash is reported on the next launch.
+- Usage statistics: the pages you open, app launches, and for scans,
+  processing, exports and saves how long they took, the film type, the
+  number of frames, the export format and the scanner model.
+- Never sent: images, file or folder names (your home folder is replaced
+  with `~`), roll names, scanner serial numbers or EEPROM data.
+- Reports carry a random install ID, which turning both switches off
+  forgets.
+- Only release builds can send: the Rybbit address is set at build time
+  (`PAKON_RYBBIT_URL`, `PAKON_RYBBIT_SITE_ID`, `PAKON_RYBBIT_DOMAIN`, see
+  `packaging/macos/README.md`). An app you build yourself, or a checkout,
+  sends nothing and never asks. `PAKON_TELEMETRY=0` turns it off in a
+  release too.
+
+The app also asks GitHub for the latest release, to tell you about updates
+(`web/update.py`); `PAKON_UPDATE_CHECK=0` turns that off.
+
 ## Roadmap
 
 Open work is tracked in [GitHub issues](https://github.com/jorshhh/pakon-macos/issues);

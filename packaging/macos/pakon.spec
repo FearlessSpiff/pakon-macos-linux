@@ -13,6 +13,14 @@ HERE = Path(SPECPATH)
 REPO = HERE.parent.parent
 BIN = Path(os.environ["PAKON_BIN_DIR"])
 VERSION = os.environ.get("PAKON_VERSION", "0.1.0")
+# Crash reports / usage statistics go to a Rybbit instance only when the
+# build sets all three (release.env); otherwise the app never sends any.
+RYBBIT = {key: os.environ[env] for key, env in (
+    ("PakonRybbitURL", "PAKON_RYBBIT_URL"),
+    ("PakonRybbitSiteID", "PAKON_RYBBIT_SITE_ID"),
+    ("PakonRybbitDomain", "PAKON_RYBBIT_DOMAIN")) if os.environ.get(env)}
+if len(RYBBIT) != 3:
+    RYBBIT = {}
 
 datas = [
     (str(REPO / "web/static"), "web/static"),
@@ -74,5 +82,6 @@ app = BUNDLE(
         "LSApplicationCategoryType": "public.app-category.photography",
         "NSHighResolutionCapable": True,
         "NSHumanReadableCopyright": "AGPL-3.0-or-later. Not affiliated with Kodak or Pakon.",
+        **RYBBIT,
     },
 )

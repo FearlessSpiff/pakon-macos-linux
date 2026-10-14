@@ -97,3 +97,15 @@ def new_order(now: datetime | None = None) -> tuple[str, Path]:
         data["next_order"] = n + 1
         _save(data)
     return order, folder / f"{now:%Y-%m-%d-%H-%M}-scan.raw"
+
+
+def setting(key: str, default=None):
+    """Another module's value in settings.json (e.g. web/telemetry.py)."""
+    return _load().get(key, default)
+
+
+def set_setting(key: str, value) -> None:
+    with _lock:
+        data = _load()
+        data[key] = value
+        _save(data)
