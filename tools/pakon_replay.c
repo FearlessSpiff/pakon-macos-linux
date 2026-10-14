@@ -1718,12 +1718,14 @@ static double lc_table_mean(const double *t, size_t line_px, int c,
 }
 
 /* The calibration itself, on a session after setup_session (F-135, Base 16
- * + IR, period 0x742). Leaves acquire on and the LEDs at the open-gate
- * values. With `with_tables`, also captures the fixed-pattern tables into
+ * + IR, period 0x742), for `film`'s base densities (the duty caps). Leaves
+ * acquire on and the LEDs at the open-gate values. With `with_tables`, also captures the fixed-pattern tables into
  * res (free with lc_result_free). Returns 0 on convergence. */
 static int light_cal_run(pakon_dev *dev, pakon_setup_state *st, unsigned t,
-                         unsigned offset, int with_tables, lc_result *res)
+                         unsigned offset, pakon_film film, int with_tables,
+                         lc_result *res)
 {
+    const double *density = pakon_lc_film_density(film);
     size_t line_px = (size_t)(st->reg5 - st->reg4);
     uint16_t *samples = malloc((size_t)PROBE_CHUNKS * PROBE_CHUNK);
     const uint16_t period = 0x742;   /* 0x0C1A * 0.6 (Base 16 + IR) */
@@ -1783,7 +1785,7 @@ static int light_cal_run(pakon_dev *dev, pakon_setup_state *st, unsigned t,
     const pakon_led_values *ceil = &pakon_led_ceiling_f135[1];
     const unsigned ceilv[4] = { ceil->r, ceil->g, ceil->b, ceil->ir };
     for (int c = 0; c < 4; c++)
-        duty[c] = cap[c] = pakon_lc_duty_cap(period, pakon_lc_density_c41[c]);
+        duty[c] = cap[c] = pakon_lc_duty_cap(period, density[c]);
     for (int pass = 1; pass <= 8; pass++) {
         pakon_led_values cur = { (uint8_t)curv[0], (uint8_t)curv[1],
                                  (uint8_t)curv[2], (uint8_t)curv[3] };
@@ -1926,7 +1928,7 @@ fail:
  * j; the scan window starts at the EEPROM Offset, calibration at pixel 6).
  */
 static int lc_write_flat(const char *path, unsigned serial, unsigned offset,
-                         const lc_result *res)
+                         pakon_film film, const lc_result *res)
 {
     size_t lp = res->line_px, px0 = offset > 6 ? offset - 6 : 0;
     FILE *f = fopen(path, "w");
@@ -1940,6 +1942,7 @@ static int lc_write_flat(const char *path, unsigned serial, unsigned offset,
     fprintf(f, "{\n  \"version\": 1,\n  \"source\": \"pakon_replay light-cal\",\n");
     fprintf(f, "  \"date\": \"%s\",\n  \"serial\": %u,\n  \"mode\": \"base16-ir\",\n",
             when, serial);
+    fprintf(f, "  \"film\": \"%s\",\n", pakon_film_name(film));
     fprintf(f, "  \"eeprom_offset\": %u,\n  \"line_px\": %zu,\n  \"px0\": %zu,\n"
                "  \"black_px\": %u,\n", offset, lp, px0, PAKON_LC_BLACK_PX);
     fprintf(f, "  \"lines_dark\": %zu,\n  \"lines_bright\": %zu,\n",
@@ -2001,7 +2004,8 @@ static int do_light_cal(unsigned timeout, const char *eeprom_dir,
         fprintf(stderr, "light-cal: F-135 only for now\n");
         goto out;
     }
-    if (light_cal_run(dev, &st, t, e.base[PAKON_EEPROM_BASE16].offset, 1, &res))
+    if (light_cal_run(dev, &st, t, e.base[PAKON_EEPROM_BASE16].offset,
+                      PAKON_FILM_C41, 1, &res))
         goto stop;
     printf("\n=== light calibration (serial %u, Base 16 + IR) ===\n", e.serial);
     printf("        current  open-gate duty  scan duty (C-41)\n");
@@ -2017,7 +2021,8 @@ static int do_light_cal(unsigned timeout, const char *eeprom_dir,
         snprintf(flat_path, sizeof flat_path, "%s/flatfield.json", eeprom_dir);
         flat_out = flat_path;
     }
-    rc = lc_write_flat(flat_out, e.serial, e.base[PAKON_EEPROM_BASE16].offset, &res);
+    rc = lc_write_flat(flat_out, e.serial, e.base[PAKON_EEPROM_BASE16].offset,
+                       PAKON_FILM_C41, &res);
 stop:
     pakon_seq_init(&seq);
     pakon_setup_teardown(&seq, &st);
@@ -2215,13 +2220,14 @@ out:
 
 /* ---- Scan with nothing replayed (F-135, Base 16 + IR) --------------------
  *
- * Code-built setup, light calibration, scan start (scan pixel window, C-41
- * scan duties, EEPROM motor speed, acquire, trigger), the --scan-sm image
+ * Code-built setup, light calibration, scan start (scan pixel window, scan
+ * duties for the film type, EEPROM motor speed, acquire, trigger), the --scan-sm image
  * loop with the event service, then the code-built teardown. Only the
  * firmware load is still a capture. Feed the film once the motor runs.
  */
 static int do_scan_code(unsigned timeout, const char *eeprom_dir,
-                        const char *image_path, unsigned long max_mb)
+                        const char *image_path, unsigned long max_mb,
+                        pakon_film film)
 {
     pakon_ctx *ctx;
     pakon_dev *dev;
@@ -2240,7 +2246,8 @@ static int do_scan_code(unsigned timeout, const char *eeprom_dir,
         fprintf(stderr, "scan-code: F-135 only for now\n");
         goto out;
     }
-    if (light_cal_run(dev, &st, t, e.base[PAKON_EEPROM_BASE16].offset, 1, &res)) {
+    printf("film: %s\n", film == PAKON_FILM_BW ? "B&W (silver)" : "colour negative");
+    if (light_cal_run(dev, &st, t, e.base[PAKON_EEPROM_BASE16].offset, film, 1, &res)) {
         fprintf(stderr, "scan-code: calibration failed\n");
         goto stop;
     }
@@ -2248,11 +2255,13 @@ static int do_scan_code(unsigned timeout, const char *eeprom_dir,
         /* The scan's own flat field, next to the raw (the decoder picks it up). */
         char flat_path[1024];
         snprintf(flat_path, sizeof flat_path, "%s.flat.json", image_path);
-        lc_write_flat(flat_path, e.serial, e.base[PAKON_EEPROM_BASE16].offset, &res);
+        lc_write_flat(flat_path, e.serial, e.base[PAKON_EEPROM_BASE16].offset,
+                      film, &res);
     }
     uint16_t scan_duty[4];
     for (int c = 0; c < 4; c++)
-        scan_duty[c] = pakon_lc_scan_duty(res.duty[c], pakon_lc_density_c41[c], period);
+        scan_duty[c] = pakon_lc_scan_duty(res.duty[c],
+                                          pakon_lc_film_density(film)[c], period);
     uint16_t speed = pakon_setup_motor_speed(
         e.base[PAKON_EEPROM_BASE16].motor_speed_ir,
         e.adjust[PAKON_EEPROM_BASE16].ir, 0);
@@ -2427,7 +2436,7 @@ static void usage(const char *argv0)
         "       %s --setup --eeprom-dir DIR [--teardown]  controller init + Base 16 configure, built in code\n"
         "       %s --calib-probe --eeprom-dir DIR         static dark/lit line levels (F-135, open gate)\n"
         "       %s --light-cal --eeprom-dir DIR [--flat-out FILE]  light calibration in code (F-135, open gate)\n"
-        "       %s --scan-code --eeprom-dir DIR [--image OUT]  scan with nothing replayed (F-135)\n"
+        "       %s --scan-code --eeprom-dir DIR [--image OUT] [--film c41|bw]  scan with nothing replayed (F-135)\n"
         "       %s --film-sense SECONDS --eeprom-dir DIR  run the transport, log DX levels (F-135)\n"
         "       %s --advance-code SECONDS --eeprom-dir DIR  timed film advance in code (F-135)\n"
         "       %s --eject [--eject-seconds N] --eeprom-dir DIR  run until the strip is out (F-135)\n"
@@ -2460,6 +2469,8 @@ static void usage(const char *argv0)
         "                capture and any shorter film just stops earlier\n"
         "  --trace-status  with --scan: log live poll/kick replies + status, with\n"
         "                  the current image-read index (to learn the cadence)\n"
+        "  --film c41|bw  --scan-code film type: colour negative (default) or\n"
+        "                silver B&W (the OEM film-base densities for the LED duties)\n"
         "  --max-mb N    --scan-sm/--scan-code safety cap on image MB (default 4096,\n"
         "                0=off); a full 36-exposure roll is up to ~2 GB\n"
         "  --timeout MS  USB per-transfer timeout in ms (default 1000)\n"
@@ -2481,6 +2492,7 @@ int main(int argc, char **argv)
     int want_calibrate = 0, cal_verbose = 0, want_read_params = 0, want_configure = 0;
     int want_setup = 0, want_teardown = 0, want_probe = 0, want_lightcal = 0;
     int want_scan_code = 0;
+    pakon_film film = PAKON_FILM_C41;
     unsigned film_sense_s = 0, advance_code_s = 0, eject_s = 60;
     int want_eject = 0;
     const char *eeprom_dir = NULL;
@@ -2521,6 +2533,16 @@ int main(int argc, char **argv)
             film_sense_s = (unsigned)strtoul(argv[++i], NULL, 0);
         } else if (!strcmp(argv[i], "--scan-code")) {
             want_scan_code = 1;
+        } else if (!strcmp(argv[i], "--film") && i + 1 < argc) {
+            const char *f = argv[++i];
+            if (!strcmp(f, "c41"))
+                film = PAKON_FILM_C41;
+            else if (!strcmp(f, "bw"))
+                film = PAKON_FILM_BW;
+            else {
+                fprintf(stderr, "--film: c41 or bw, got '%s'\n", f);
+                return 2;
+            }
         } else if (!strcmp(argv[i], "--flat-out") && i + 1 < argc) {
             flat_out = argv[++i];
         } else if (!strcmp(argv[i], "--light-cal")) {
@@ -2594,7 +2616,7 @@ int main(int argc, char **argv)
     if (film_sense_s)
         return do_film_sense(timeout, eeprom_dir, film_sense_s > 120 ? 120 : film_sense_s);
     if (want_scan_code)
-        return do_scan_code(timeout, eeprom_dir, image_path, max_mb);
+        return do_scan_code(timeout, eeprom_dir, image_path, max_mb, film);
     if (want_lightcal)
         return do_light_cal(timeout, eeprom_dir, flat_out);
     if (want_probe)

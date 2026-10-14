@@ -12,11 +12,11 @@ Endpoints
 ---------
 GET  /api/status                  scanner state + current job info
 POST /api/firmware                SSE — load firmware (cold device)
-POST /api/scan                    SSE — run a scan (a new order in the work folder)
+POST /api/scan                    SSE — run a scan (a new order in the work folder; film c41|bw)
 POST /api/workdir                 set the work folder scans go into
 POST /api/eject                   SSE — run the film out of the transport
 POST /api/open                    pick a .raw on the host (keeps its crops)
-POST /api/process                 SSE — decode the opened .raw or the last scan
+POST /api/process                 SSE — decode the opened .raw or the last scan (film c41|bw)
 GET  /api/frames                  list decoded frames
 GET  /api/frames/{n}/thumb        JPEG thumbnail
 GET  /api/frames/{n}/tiff         16-bit TIFF download
@@ -37,7 +37,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import eeprom, orders
-from .decode import (WORK_DIR, PREVIEW_PATH, prescan, export_frames,
+from .decode import (WORK_DIR, PREVIEW_PATH, FILMS, prescan, export_frames,
                      make_contact_sheet, find_eeprom_dir, clear_work)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -273,7 +273,7 @@ async def _run_streaming(args: list[str], out_path: Path | None, keys=None):
     yield {"type": "exit", "code": proc.returncode}
 
 
-async def _scan_stream():
+async def _scan_stream(film: str):
     if not REPLAY_BIN.exists():
         yield _sse({"type": "error",
                     "message": f"pakon_replay binary not found: {REPLAY_BIN}"})
@@ -287,9 +287,13 @@ async def _scan_stream():
         yield _sse({"type": "log", "message": "Detecting scanner model..."})
         model = await _detect_model()
     if model == "F-135" and eeprom_dir is not None:
-        async for ev in _scan_code_stream(eeprom_dir):
+        async for ev in _scan_code_stream(eeprom_dir, film):
             yield ev
         return
+    if film != "c41":
+        yield _sse({"type": "log",
+                    "message": "The replayed scan is set up for colour negative; "
+                               "the film type applies to the decode only"})
     if model == "F-135":
         yield _sse({"type": "log",
                     "message": "No EEPROM archive in backups/eeprom/ (or "
@@ -347,7 +351,9 @@ async def _scan_stream():
     size = out_path.stat().st_size if out_path.exists() else 0
     mb = round(size / 1_048_576, 1)
     if proc.returncode == 0:
-        yield _sse({"type": "done", "bytes": size, "mb": mb, "path": str(out_path)})
+        _save_film(out_path, film)
+        yield _sse({"type": "done", "bytes": size, "mb": mb, "path": str(out_path),
+                    "film": film})
     else:
         yield _sse({"type": "error",
                     "message": f"scan failed (exit {proc.returncode})"})
@@ -364,7 +370,7 @@ def _prepare_out() -> tuple[Path | None, str | None]:
     return out_path, None
 
 
-async def _scan_code_stream(eeprom_dir: Path):
+async def _scan_code_stream(eeprom_dir: Path, film: str):
     """F-135 scan with nothing replayed: setup, light calibration (open gate,
     keep the film out), motor start, then the operator feeds the film."""
     out_path, err = _prepare_out()
@@ -379,7 +385,8 @@ async def _scan_code_stream(eeprom_dir: Path):
                            f"until the motor starts."})
     code = 1
     async for ev in _run_streaming(
-            ["--scan-code", "--eeprom-dir", str(eeprom_dir), "--image", str(out_path)],
+            ["--scan-code", "--eeprom-dir", str(eeprom_dir), "--image", str(out_path),
+             "--film", film],
             out_path, _SCAN_LOG_KEYS):
         if ev["type"] == "exit":
             code = ev["code"]
@@ -388,7 +395,9 @@ async def _scan_code_stream(eeprom_dir: Path):
     size = out_path.stat().st_size if out_path.exists() else 0
     mb = round(size / 1_048_576, 1)
     if code == 0:
-        yield _sse({"type": "done", "bytes": size, "mb": mb, "path": str(out_path)})
+        _save_film(out_path, film)
+        yield _sse({"type": "done", "bytes": size, "mb": mb, "path": str(out_path),
+                    "film": film})
     else:
         yield _sse({"type": "error",
                     "message": f"scan failed (exit {code}) — see the log"})
@@ -440,8 +449,10 @@ async def api_eject():
 
 
 @app.post("/api/scan")
-async def api_scan():
-    return StreamingResponse(_scan_stream(), media_type="text/event-stream",
+async def api_scan(film: str = Body("c41", embed=True)):
+    if film not in FILMS:
+        return JSONResponse({"error": f"unknown film type: {film}"}, status_code=400)
+    return StreamingResponse(_scan_stream(film), media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
 
@@ -549,8 +560,9 @@ def _run_job(work, on_done):
 
 
 @app.post("/api/process")
-async def api_process():
-    """Prescan: cache the ribbon, render the preview strip, detect frame centres."""
+async def api_process(film: str | None = Body(None, embed=True)):
+    """Prescan: cache the ribbon, render the preview strip, detect frame centres.
+    `film` (c41 | bw) defaults to the one recorded for the raw."""
     if _state["processing"]:
         async def _busy():
             yield _sse({"type": "error", "message": "Already processing"})
@@ -566,6 +578,12 @@ async def api_process():
         return StreamingResponse(_no_file(), media_type="text/event-stream",
                                  headers=_SSE_HEADERS)
 
+    if film is None:
+        film = _raw_film(raw_path)
+    elif film not in FILMS:
+        film = "c41"
+    else:
+        _save_film(raw_path, film)
     _state["frames"] = []
     _state["prescan"] = None
     _state["processing"] = True
@@ -576,9 +594,41 @@ async def api_process():
         return {"type": "done", "saved": _load_crops(raw_path, meta["rows"]),
                 **{k: meta[k] for k in (
                     "rows", "cols", "pitch", "frame_w", "centres",
-                    "preview_w", "preview_h", "scale")}}
+                    "preview_w", "preview_h", "scale", "film")}}
 
-    return _run_job(lambda prog: prescan(raw_path, progress=prog), _done)
+    return _run_job(lambda prog: prescan(raw_path, progress=prog, film=film), _done)
+
+
+# ── Film type of a raw: <raw>.film beside it ──────────────────────────────────────
+# Written by the scan and whenever the operator picks another type in Process;
+# a --scan-code raw also records it in <raw>.flat.json. Colour negative when
+# neither says.
+
+def _film_path(raw: Path) -> Path:
+    return raw.with_name(raw.name + ".film")
+
+
+def _raw_film(raw: Path) -> str:
+    try:
+        film = _film_path(raw).read_text().strip()
+        if film in FILMS:
+            return film
+    except OSError:
+        pass
+    try:
+        film = json.loads(raw.with_name(raw.name + ".flat.json").read_text()).get("film")
+        if film in FILMS:
+            return film
+    except (OSError, ValueError, AttributeError):
+        pass
+    return "c41"
+
+
+def _save_film(raw: Path, film: str) -> None:
+    try:
+        _film_path(raw).write_text(film + "\n")
+    except OSError as exc:
+        print(f"film type not saved: {exc}", flush=True)
 
 
 # ── Saved crop positions: <raw>.crops.json beside the raw ───────────────────────
@@ -619,7 +669,7 @@ async def api_open(path: str = Body(..., embed=True)):
     _state["scan_path"] = raw.resolve()
     _state["frames"] = []
     _state["prescan"] = None
-    return {"path": str(_state["scan_path"])}
+    return {"path": str(_state["scan_path"]), "film": _raw_film(_state["scan_path"])}
 
 
 @app.get("/api/preview")
@@ -657,7 +707,8 @@ async def api_export_frames(
                              widths=widths,
                              frame_w=meta["frame_w"], progress=prog,
                              rpd_balance=meta.get("rpd_balance"),
-                             roll_centres=meta.get("centres"))
+                             roll_centres=meta.get("centres"),
+                             film=meta.get("film", "c41"))
 
     def _done(result):
         _state["frames"] = result

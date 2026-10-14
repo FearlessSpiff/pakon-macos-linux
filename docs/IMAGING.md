@@ -53,6 +53,12 @@ light calibration raises scan duty by `10^D` of a nominal base density
 (colour negative R 0.144, G 0.40, B 0.715), so the base is largely neutralised
 optically before the data reaches the LUT [I].
 
+**Silver B&W** (TLB.dll film type 4) goes through the same LUT and NegMatrix
+(FUN_1000d880 treats types 1, 4 and 8 alike; 2 = positive). We then average
+the three RPD channels, render the neutral through `rpd.pf` and keep the
+Rec. 709 luma (`render_oem(..., grey=True)`); where the OEM greys is not
+traced yet.
+
 **Implemented (2026-10-09), `render_oem` in `tools/pakon_image.py`:** raw
 16-bit minus the calibrated black (~300) ÷ 4 → 14-bit → the LUT → the unit's
 NegMatrix (all ten terms) → 12-bit RPD → `rpd.pf` → sRGB. Two facts make this

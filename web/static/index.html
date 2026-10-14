@@ -234,6 +234,8 @@
     }
     .scan-table td + td, .scan-table th + th { border-left: 2px solid var(--border); }
     .scan-table .col-order { width: 9.5em; }
+    .scan-table .col-film { width: 190px; }
+    .scan-table select { width: 100%; }
     .scan-table .col-act { width: 262px; }      /* Scan + Advance film buttons + gap + padding + shadow */
     /* narrow: one labelled row per cell instead of three squeezed columns */
     @media (max-width: 560px) {
@@ -525,7 +527,7 @@
   <h2>Scan</h2>
   <table class="scan-table">
     <thead>
-      <tr><th>Work folder</th><th class="col-order">Next order</th><th class="col-act">Film</th></tr>
+      <tr><th>Work folder</th><th class="col-order">Next order</th><th class="col-film">Film type</th><th class="col-act">Film</th></tr>
     </thead>
     <tbody>
       <tr>
@@ -537,6 +539,12 @@
           </div>
         </td>
         <td data-label="Next order"><span class="order-num" id="scan-order">—</span></td>
+        <td data-label="Film type">
+          <select id="scan-film" aria-label="Film type">
+            <option value="c41">Colour negative</option>
+            <option value="bw">B&amp;W (silver)</option>
+          </select>
+        </td>
         <td data-label="Film">
           <div class="act-cell">
             <button id="scan-btn">Scan</button>
@@ -581,6 +589,12 @@
       <div class="raw-title" id="raw-name">No raw loaded — run a scan or open one</div>
       <div class="raw-sub" id="raw-dir"></div>
     </div>
+    <label class="field">Film
+      <select id="proc-film" aria-label="Film type of the raw">
+        <option value="c41">Colour negative</option>
+        <option value="bw">B&amp;W (silver)</option>
+      </select>
+    </label>
     <button id="raw-open">Open…</button>
   </div>
   <div class="progress-wrap" id="proc-prog-wrap">
@@ -869,7 +883,7 @@
     $('scan-prog').value = 0;
     $('scan-log').textContent = '';
     $('feed-prompt').classList.remove('show');
-    await postSSE('/api/scan', {}, ev => {
+    await postSSE('/api/scan', { film: $('scan-film').value }, ev => {
       if (ev.type === 'order') {
         logLine('scan-log', `Order ${ev.order}: ${ev.path}`);
       } else if (ev.type === 'log') {
@@ -886,7 +900,12 @@
         $('scan-prog').value = $('scan-prog').max;
         $('scan-prog-label').textContent = `Complete — ${ev.mb} MB`;
         setMsg($('scan-msg'), `Scan complete (${ev.mb} MB)`, 'ok');
-        if (ev.path) { showRaw(ev.path); showSpace('frames'); processRaw(); }
+        if (ev.path) {
+          showRaw(ev.path);
+          if (ev.film) $('proc-film').value = ev.film;
+          showSpace('frames');
+          processRaw();
+        }
       } else if (ev.type === 'error') {
         setMsg($('scan-msg'), ev.message, 'err');
       }
@@ -988,6 +1007,17 @@
   $('home-scan').addEventListener('click', () => showSpace('scan'));
   $('home-raw').addEventListener('click', () => openBrowser(true, workDir));
 
+  // Film type: the scan's is remembered in this browser; Process follows the
+  // raw (the scan's choice, or what the raw was last processed as), and
+  // picking another type there processes the open raw again.
+  try { $('scan-film').value = localStorage.getItem('pakon-scan-film') || 'c41'; } catch {}
+  $('scan-film').addEventListener('change', () => {
+    try { localStorage.setItem('pakon-scan-film', $('scan-film').value); } catch {}
+  });
+  $('proc-film').addEventListener('change', () => {
+    if ($('raw-slot').classList.contains('set')) processRaw();
+  });
+
   // Open a raw where it is on the host and process it in place; its export
   // saves the frame positions beside it (<raw>.crops.json) for next time.
   async function openRaw(path) {
@@ -999,6 +1029,7 @@
     const d = await resp.json();
     if (!resp.ok) { setMsg($('browse-msg'), d.error || 'could not open', 'err'); return; }
     showRaw(d.path);
+    if (d.film) $('proc-film').value = d.film;
     $('browse-modal').classList.add('hidden');
     showSpace('process');   // watch the progress there; Frames opens when done
     processRaw();
@@ -1050,6 +1081,7 @@
   async function processRaw() {
     const btn = $('raw-open');
     btn.disabled = true;
+    $('proc-film').disabled = true;
     setBusy('process', true);
     setBusy('frames', true);
     setMsg($('proc-msg'), '');
@@ -1060,7 +1092,7 @@
     resetExport();
     $('frames-grid').innerHTML = '';
 
-    await postSSE('/api/process', {}, ev => {
+    await postSSE('/api/process', { film: $('proc-film').value }, ev => {
       if (ev.type === 'progress') {
         $('proc-prog').value = ev.pct;
         $('proc-prog-label').textContent = ev.step;
@@ -1081,6 +1113,7 @@
       }
     });
     btn.disabled = false;
+    $('proc-film').disabled = false;
     setBusy('process', false);
     setBusy('frames', false);
   }

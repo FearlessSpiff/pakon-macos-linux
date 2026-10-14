@@ -13,6 +13,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 static int failures = 0;
 
@@ -203,6 +204,27 @@ int main(void)
     CHECK(pakon_lc_smear(300, 300, 64300, 300) == 0 &&
           pakon_lc_smear(1300, 300, 64300, 300) == 0,
           "smear: kept only within 1..699");
+
+    /* Film types: colour negative is the default; silver B&W uses the OEM's
+     * "other" densities, so the calibration caps sit at (nearly) the full
+     * period and the scan duties stay near the open-gate ones. */
+    CHECK(pakon_lc_film_density(PAKON_FILM_C41) == pakon_lc_density_c41 &&
+          pakon_lc_film_density(PAKON_FILM_BW) == pakon_lc_density_bw,
+          "film density tables");
+    CHECK(!strcmp(pakon_film_name(PAKON_FILM_C41), "c41") &&
+          !strcmp(pakon_film_name(PAKON_FILM_BW), "bw"), "film names");
+    {
+        const uint16_t bw_cap[4] = { 1856, 1732, 1856, 1544 };
+        const uint16_t bw_scan[4] = { 896, 759, 278, 1627 };
+        const uint16_t open[4] = { 896, 708, 278, 1353 };
+        for (int c = 0; c < 4; c++) {
+            snprintf(msg, sizeof msg, "B&W channel %d: cap %u, scan duty %u", c,
+                     bw_cap[c], bw_scan[c]);
+            CHECK(pakon_lc_duty_cap(period, pakon_lc_density_bw[c]) == bw_cap[c] &&
+                  pakon_lc_scan_duty(open[c], pakon_lc_density_bw[c], period) ==
+                  bw_scan[c], msg);
+        }
+    }
 
     if (failures) {
         printf("\n%d test(s) FAILED\n", failures);

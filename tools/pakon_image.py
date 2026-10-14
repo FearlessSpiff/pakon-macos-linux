@@ -431,14 +431,29 @@ def oem_roll_balance(rgb16, negmat, lut, strength=OEM_BALANCE):
     return gain.astype(np.float32), (base * (1.0 - gain)).astype(np.float32)
 
 
-def render_oem(rgb16, negmat, lut, rpd_lut, balance=None):
+def render_oem(rgb16, negmat, lut, rpd_lut, balance=None, grey=False):
     """Raw 16-bit RGB frame -> OEM-path positive, 16-bit sRGB. `balance` is
-    the (gain, offset) pair from oem_roll_balance (None = none)."""
+    the (gain, offset) pair from oem_roll_balance (None = none).
+
+    grey=True is silver B&W: TLB.dll runs B&W through the same NegMatrix as
+    colour negative; the three RPD channels are then averaged (silver is
+    neutral, so they carry the same picture and the mean halves the noise)
+    and the neutral rendered through rpd.pf, giving the OEM tone curve. Returns
+    (H, W) 16-bit grey instead of (H, W, 3)."""
     rpd = oem_rpd(rgb16, negmat, lut)
     if balance is not None:
         rpd = np.clip(rpd * balance[0] + balance[1], 0.0, 4095.0)
+    if grey:
+        rpd = np.repeat(rpd.mean(axis=-1, keepdims=True), 3, axis=-1)
     srgb = rpd_lut.apply(rpd / 4095.0)
-    return np.clip(srgb * 65535.0 + 0.5, 0.0, 65535.0).astype(np.uint16)
+    out = np.clip(srgb * 65535.0 + 0.5, 0.0, 65535.0).astype(np.uint16)
+    return to_grey(out) if grey else out
+
+
+def to_grey(rgb16):
+    """(H, W, 3) 16-bit sRGB -> (H, W) 16-bit grey, Rec. 709 luma."""
+    y = rgb16.astype(np.float32) @ np.array([0.2126, 0.7152, 0.0722], np.float32)
+    return np.clip(y + 0.5, 0.0, 65535.0).astype(np.uint16)
 
 
 def render_jpeg(rgb16_srgb, rpd_path, gamma=1.5, lo_p=0.5, hi_p=99.7, knee=0.85):
@@ -614,15 +629,17 @@ def find_ir_band(chans, full):
 
 
 def write_tiff(rgb16, path, resize=None):
-    """Write an (H,W,3) uint16 array as a 16-bit RGB TIFF via ImageMagick.
-    If resize=(W,H) is given, resample to exactly that size."""
-    h, w, _ = rgb16.shape
-    fd, tmp = tempfile.mkstemp(suffix=".rgb")
+    """Write an (H,W,3) uint16 array as a 16-bit RGB TIFF via ImageMagick
+    ((H,W) as a 16-bit grey TIFF). If resize=(W,H) is given, resample to
+    exactly that size."""
+    h, w = rgb16.shape[:2]
+    fmt = "gray" if rgb16.ndim == 2 else "rgb"
+    fd, tmp = tempfile.mkstemp(suffix="." + fmt)
     os.close(fd)
     rgb16.astype(">u2").tofile(tmp)              # big-endian interleaved RGB
     try:
         cmd = ["magick", "-size", f"{w}x{h}", "-depth", "16",
-               "-endian", "msb", f"rgb:{tmp}"]
+               "-endian", "msb", f"{fmt}:{tmp}"]
         if resize:
             rw, rh = resize
             # '!' forces exact dimensions (no aspect preservation — we are
@@ -887,6 +904,10 @@ def main():
                     help="OEM-faithful C-41 inversion (ColNeg log-density LUT + "
                          "crosstalk matrix + sRGB encode, recovered from "
                          "PakonIMAu.dll). Produces a viewable positive.")
+    ap.add_argument("--bw", action="store_true",
+                    help="silver B&W film: with --invert-c41, the same "
+                         "inversion (NegMatrix with --eeprom-dir), then grey; "
+                         "writes 16-bit grey TIFFs and grey JPEGs")
     ap.add_argument("--c41-matrix", default="none", choices=["none", "post", "pre"],
                     help="where to apply the ColNeg crosstalk matrix (default "
                          "none; the OEM matrix offsets over-subtract G/B in our "
@@ -934,6 +955,8 @@ def main():
             sys.exit("--resample-to must be WxH, e.g. 3000x2000")
 
     rpd_path = os.path.abspath(args.rpd_profile)
+    if args.bw and not args.invert_c41:
+        sys.exit("--bw requires --invert-c41")
     if args.eeprom_dir and not args.invert_c41:
         sys.exit("--eeprom-dir requires --invert-c41")
     if args.jpeg or args.eeprom_dir:
@@ -1096,10 +1119,12 @@ def main():
             r_start = max(0, r_end - frame_w)
         part = rgb[r_start:r_end]
         if oem is not None:
-            part = render_oem(part, *oem)
+            part = render_oem(part, *oem, grey=args.bw)
         elif c41 is not None:
             part = invert_c41(part, c41[0], c41[1], matrix=args.c41_matrix,
                               wb=args.c41_wb, srgb=not args.c41_no_srgb)
+            if args.bw:
+                part = to_grey(part)
         if rot:
             part = np.rot90(part, k=rot)
         part = np.ascontiguousarray(part)
@@ -1108,15 +1133,17 @@ def main():
         write_tiff(part, tif, resize=resize)
         w_out = resize[0] if resize else part.shape[1]
         h_out = resize[1] if resize else part.shape[0]
-        print(f"wrote {tif}  ({w_out}x{h_out}, 16-bit RGB"
+        print(f"wrote {tif}  ({w_out}x{h_out}, 16-bit {'grey' if part.ndim == 2 else 'RGB'}"
               f"{' resampled' if resize else ''}"
               f"{' C-41 positive' if (c41 or oem) is not None else (' inverted' if args.invert else ' raw/negative')})")
         if args.jpeg:
             from PIL import Image
             # The OEM-path TIFF is already rendered through rpd.pf.
-            rendered = ((part >> 8).astype(np.uint8) if oem is not None
-                        else render_jpeg(part, rpd_path, gamma=args.jpeg_gamma))
-            im = Image.fromarray(rendered, "RGB")
+            if oem is not None or part.ndim == 2:
+                rendered = (part >> 8).astype(np.uint8)
+            else:
+                rendered = render_jpeg(part, rpd_path, gamma=args.jpeg_gamma)
+            im = Image.fromarray(rendered, "L" if rendered.ndim == 2 else "RGB")
             if resize:
                 im = im.resize(resize, Image.LANCZOS)
             jpg = f"{args.out}{suffix}.jpg"
