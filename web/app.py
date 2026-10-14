@@ -22,6 +22,7 @@ GET  /api/frames/{n}/thumb        JPEG thumbnail
 GET  /api/frames/{n}/tiff         16-bit TIFF download
 POST /api/save                    SSE — save the frames to the work folder (jpeg|tiff|raw|contact)
 POST /api/reveal                  show a saved export folder in Finder (macOS)
+POST /api/update/open             open the newer release's page in the browser
 """
 import asyncio
 import json
@@ -36,7 +37,7 @@ from fastapi import Body, FastAPI
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import eeprom, orders
+from . import eeprom, orders, update
 from .decode import (WORK_DIR, PREVIEW_PATH, FILMS, prescan, export_frames,
                      make_contact_sheet, find_eeprom_dir, clear_work)
 
@@ -157,6 +158,7 @@ async def api_status():
         "eeprom": (lambda d: d.name if d else None)(_eeprom_dir()),
         "eeprom_unit": eeprom.status(),
         "firmware_hex": _fw_hex_available(),
+        "update": update.status(),        # a newer release, or None
     }
 
 
@@ -848,6 +850,18 @@ async def api_reveal(path: str = Body(..., embed=True)):
     subprocess.Popen(["open", "-R", str(target)] if target.is_file()
                      else ["open", str(target)])
     return {"ok": True}
+
+
+@app.post("/api/update/open")
+async def api_update_open():
+    """Open the newer release's page in the default browser (the app window
+    cannot); elsewhere the page opens the returned URL itself."""
+    st = update.status()
+    url = st["url"] if st else update.RELEASES + "/latest"
+    if sys.platform == "darwin":
+        subprocess.Popen(["open", url])
+        return {"opened": True, "url": url}
+    return {"opened": False, "url": url}
 
 
 # ── Static files (must be last) ───────────────────────────────────────────────
