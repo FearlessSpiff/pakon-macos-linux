@@ -255,6 +255,22 @@
     }
     button.icon svg { width: 18px; height: 18px; display: block; }
 
+    /* ── Home space: welcome + the two ways in ── */
+    .welcome { padding: 40px 32px; }
+    .welcome h2 { font-size: 2rem; letter-spacing: -0.02em; margin-bottom: 8px; }
+    .welcome .lead { margin-bottom: 28px; }
+    .choices { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }
+    button.choice {
+      text-align: left; text-transform: none;
+      display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+      padding: 22px 20px; box-shadow: var(--shadow);
+    }
+    button.choice.ghost { background: var(--surface2); }
+    button.choice svg { width: 36px; height: 36px; margin-bottom: 4px; }
+    .choice-name { font-family: 'Space Grotesk', sans-serif; font-size: 1.3rem; font-weight: 700; text-transform: uppercase; }
+    .choice-desc { font-family: 'Inter', sans-serif; font-weight: 400; font-size: 0.86rem; line-height: 1.45; }
+    .choice-state { font-size: 0.75rem; display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+
     /* ── Process card: steps + the loaded raw ── */
     .lead { font-size: 0.92rem; line-height: 1.5; max-width: 62ch; margin-bottom: 18px; }
     .steps {
@@ -456,6 +472,30 @@
   </div>
 </header>
 
+<!-- ══ Home space: where the app opens ══ -->
+<section class="space" id="space-home" role="tabpanel" aria-labelledby="tab-home">
+
+<div class="card welcome">
+  <h2>Welcome</h2>
+  <p class="lead">Scan a roll of 35&nbsp;mm film on the F-135, or pick up a roll you
+    already scanned. Either way it ends up as finished frames in your work folder.</p>
+  <div class="choices">
+    <button class="choice" id="home-scan">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="6" width="18" height="12"/><path d="M3 9h18M3 15h18M7 6v3M11 6v3M15 6v3M19 6v3M7 15v3M11 15v3M15 15v3M19 15v3"/></svg>
+      <span class="choice-name">Start a scan</span>
+      <span class="choice-desc">Feed a new roll through the scanner. It opens in Frames when the scan is done.</span>
+      <span class="choice-state"><span class="dot" id="home-dot"></span><span id="home-state">Checking…</span></span>
+    </button>
+    <button class="choice ghost" id="home-raw">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3 6h7l2 2h9v11H3z"/><path d="M12 11v5M9.5 13.5L12 16l2.5-2.5"/></svg>
+      <span class="choice-name">Load a raw</span>
+      <span class="choice-desc">Open a <code>.raw</code> from an earlier scan. Frame positions you saved before come back with it.</span>
+    </button>
+  </div>
+</div>
+
+</section>
+
 <!-- ══ Scan space ══ -->
 <section class="space" id="space-scan" role="tabpanel" aria-labelledby="tab-scan">
 
@@ -653,7 +693,8 @@
 
 <!-- Space switcher, along the bottom like a Resolve page bar -->
 <nav class="spaces" role="tablist" aria-label="Workspace">
-  <button role="tab" id="tab-scan" data-space="scan" aria-controls="space-scan" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="6" width="18" height="12"/><path d="M3 9h18M3 15h18M7 6v3M11 6v3M15 6v3M19 6v3M7 15v3M11 15v3M15 15v3M19 15v3"/></svg>Scan</button>
+  <button role="tab" id="tab-home" data-space="home" aria-controls="space-home" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M3 11l9-7 9 7"/><path d="M5 9.5V20h14V9.5"/><path d="M10 20v-6h4v6"/></svg>Home</button>
+  <button role="tab" id="tab-scan"data-space="scan" aria-controls="space-scan" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="6" width="18" height="12"/><path d="M3 9h18M3 15h18M7 6v3M11 6v3M15 6v3M19 6v3M7 15v3M11 15v3M15 15v3M19 15v3"/></svg>Scan</button>
   <button role="tab" id="tab-process" data-space="process" aria-controls="space-process" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="3" y="5" width="18" height="14"/><rect x="6" y="8" width="7" height="8"/><path d="M16 9h2M16 12h2M16 15h2"/></svg>Process</button>
   <button role="tab" id="tab-frames" data-space="frames" aria-controls="space-frames" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><rect x="2" y="7" width="9" height="10"/><rect x="13" y="7" width="9" height="10"/><path d="M2 4h20M2 20h20"/></svg>Frames</button>
   <button role="tab" id="tab-export" data-space="export" aria-controls="space-export" aria-selected="false"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M4 15v5h16v-5"/></svg>Export</button>
@@ -737,8 +778,8 @@
       $('scan-empty-msg').textContent = d.state === 'unknown' && d.state_error
         ? d.state_error
         : 'Connect the F-135 by USB and turn it on. It shows up here by itself.';
-      // First status: open on Scan when a scanner is there, else on Process.
-      if (!currentSpace) showSpace(d.state === 'warm' || d.state === 'cold' ? 'scan' : 'process');
+      $('home-dot').className = 'dot ' + d.state;
+      $('home-state').textContent = labels[d.state] || d.state;
 
       $('scan-mode').textContent = d.eeprom
         ? `F-135: scan built in code (EEPROM ${d.eeprom}); F-135+: replayed script`
@@ -750,7 +791,8 @@
 
       // If a scan file exists server-side and we haven't surfaced it yet
     } catch {
-      if (!currentSpace) showSpace('process');   // no status: still show something
+      $('home-dot').className = 'dot';
+      $('home-state').textContent = 'Scanner status unknown';
     }
   }
 
@@ -777,6 +819,7 @@
   document.querySelectorAll('.spaces button').forEach(b =>
     b.addEventListener('click', () => showSpace(b.dataset.space)));
 
+  showSpace('home');
   setInterval(pollStatus, 2000);
   pollStatus();
 
@@ -942,6 +985,8 @@
 
   $('scan-out-btn').addEventListener('click', () => openBrowser(false, workDir));
   $('raw-open').addEventListener('click', () => openBrowser(true, workDir));
+  $('home-scan').addEventListener('click', () => showSpace('scan'));
+  $('home-raw').addEventListener('click', () => openBrowser(true, workDir));
 
   // Open a raw where it is on the host and process it in place; its export
   // saves the frame positions beside it (<raw>.crops.json) for next time.
@@ -955,6 +1000,7 @@
     if (!resp.ok) { setMsg($('browse-msg'), d.error || 'could not open', 'err'); return; }
     showRaw(d.path);
     $('browse-modal').classList.add('hidden');
+    showSpace('process');   // watch the progress there; Frames opens when done
     processRaw();
   }
   $('browse-close').addEventListener('click', () => {
