@@ -57,6 +57,12 @@ This submits the `.dmg`, waits for Apple, staples the ticket and checks it with
 name: the website's Download button points at
 `releases/latest/download/Pakon.dmg`.
 
+Installed apps check the latest release on launch (and every 6 hours) and
+show a banner when it is newer than their own version (`web/update.py`), so
+tag releases `vX.Y.Z` with the same number passed to `build.sh`, and do not
+mark them draft or pre-release unless they should stay hidden. Users can turn
+the check off with `PAKON_UPDATE_CHECK=0`.
+
 ## Where the app keeps things
 
 - EEPROM archives: `~/Library/Application Support/Pakon/eeprom/` (the app
