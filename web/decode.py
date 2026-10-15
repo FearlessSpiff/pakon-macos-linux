@@ -51,7 +51,7 @@ from pakon_image import (  # noqa: E402
 )
 import oem_sba  # noqa: E402
 
-from . import eeprom  # noqa: E402
+from . import dx, eeprom  # noqa: E402
 
 WORK_DIR = Path("/tmp/pakon_web")
 # What an export leaves in WORK_DIR; replaced by the next export or roll.
@@ -300,7 +300,8 @@ def prescan(raw_path, progress=None, film="c41") -> dict:
 
 def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
                   frame_w=_FRAME_W, progress=None, rpd_balance=None,
-                  roll_centres=None, film="c41", flare=None) -> list[dict]:
+                  roll_centres=None, film="c41", flare=None,
+                  dx_film=None) -> list[dict]:
     """Stage 2. Crop the cached ribbon at each confirmed centre, invert and
     render, write TIFF/JPEG. With the scanner's EEPROM archive and rpd.pf this
     is the OEM F-135 colour path (density LUT -> NegMatrix -> rpd.pf), for both
@@ -316,7 +317,10 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
 
     film="bw" (silver B&W) writes 16-bit grey TIFFs and grey JPEGs; "slide"
     renders through the OEM positive path, with no scene balance, minus
-    `flare` (the prescan's measure_slide_flare)."""
+    `flare` (the prescan's measure_slide_flare).
+
+    `dx_film` (web/dx.py lookup) puts the film's name and ISO in every file's
+    metadata; None writes none."""
     grey = film == "bw"
     slide = _slide_path() if film == "slide" else None
     WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -381,10 +385,13 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
         jpg_path = WORK_DIR / f"frame_{i + 1:02d}.jpg"
         thumb_path = WORK_DIR / f"thumb_{i + 1:02d}.jpg"
         # raw negative (uninverted, 16-bit) — for inverting in another tool
-        tifffile.imwrite(str(raw_tiff), part, photometric="rgb")
+        tifffile.imwrite(str(raw_tiff), part, photometric="rgb",
+                         **dx.tiff_kwargs(dx_film))
         tifffile.imwrite(str(pos_tiff), pos,
-                         photometric="minisblack" if grey else "rgb")
-        Image.fromarray(rendered).save(str(jpg_path), "JPEG", quality=92)
+                         photometric="minisblack" if grey else "rgb",
+                         **dx.tiff_kwargs(dx_film))
+        Image.fromarray(rendered).save(str(jpg_path), "JPEG", quality=92,
+                                       **dx.jpeg_kwargs(dx_film))
         step = max(1, max(rendered.shape[0] // 600, rendered.shape[1] // 600))
         Image.fromarray(rendered[::step, ::step]).save(str(thumb_path),
                                                        "JPEG", quality=85)

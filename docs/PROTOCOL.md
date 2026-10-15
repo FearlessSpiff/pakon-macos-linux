@@ -154,6 +154,53 @@ In our captures every ack is from LOW, and `0x90` follows 93 of 95 acks
 whatever the status (not only on `0xA4`); `0x84`/`0x88` follow every `0x02`
 and `0x40` ack.
 
+## DX sensor block (`0x90`) [C]
+
+The 30 bytes after the reply header `01 20 <LOW> 08` (layout from
+pakon-reference `dx-barcode.md`, checked against our captures): bytes 0–1
+position counter (big-endian), byte 2 entry count, then 5-byte entries with
+the type in the low nibble of byte 0. Decoded by `pakon_dx` (`test_dx` runs
+every reply in the three scan captures); the event service logs each block as
+a `dx:` line at `PAKON_DEBUG=2`, and `--scan-code` / `--scan-sm` print a
+summary at the end of the scan.
+
+**Serial 3054 decodes the barcode.** The reference unit (F-135+, 16402) never
+produced a type-3 entry; ours produces one per half frame:
+
+| capture | sensor reads | codes | film (part 1 / part 2) | frames |
+|---|---|---|---|---|
+| `36frames.pcapng` | 38 | 69 | 97 / 10 | 0A..36A |
+| `pakon_fullroll.pcapng` | 25 | 45 | 96 / 12 | 0A..24A |
+| `pakon_scan.pcapng` | 9 | 5 | 82 / 3 (KODAK GOLD 400) | 6 down to 4 |
+
+All 119 codes pass parity and none has the invalid bit set. 97/10 and 96/12
+are not in the OEM's 2006 product-code table (self-allocated later, as the
+reference describes for Portra). A few half frames are missing (36frames
+lacks 5, 18, 28 and 36; fullroll lacks 6, 8, 15 and 18), which the engine
+fills by interpolation.
+
+What our unit adds to the reference:
+
+- Inside a block, type-5 and type-3 entries alternate, one pair per half
+  frame, with the code after its position (the engine's slot rule). The
+  first entry of a block may be either; a code that leads a block takes its
+  position from the type 5 that ended the block before.
+- Byte 1 of a type 3 does **not** mark the "A" code: it is `0x01` for every
+  code on both full rolls and `0x02` for every code on the strip, whose
+  numbers count down (film fed the other way round, or read from the other
+  edge). The type 5 beside it carries the same value. Which of the two
+  staggered sensors read the code is a guess, not established. The engine's
+  fixed shift of "A"-slot codes (dx-barcode.md) would then be the stagger
+  between the sensors.
+- `frame_raw` is unsigned: a 36-exposure roll reaches 73 (36A), past the
+  reference's 7-bit two's-complement reading. Only 124–127 are leader labels
+  ("X", "00").
+- The high nibble of each block's first entry varies (`0x3`, `0x2`, `0x1`,
+  `0x9`, `0xb`); the rest are `0`. Meaning unknown.
+- Each scan starts with two type-7 entries, the first with a flag that varies
+  (`0x01`, `0x49`, `0x79`), the second with `0x02` (the film start), and ends
+  with type-8 entries (flag `0x01` then `0x02`; the strip has only `0x02`).
+
 ## Scan (OEM sequence) [C]
 
 `FN_bBeforeScan` → `FN_iScanStrips` → `FN_bAfterScan`:

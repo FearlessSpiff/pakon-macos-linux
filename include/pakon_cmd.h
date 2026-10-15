@@ -13,6 +13,7 @@
 #include "pakon_usb.h"
 #include "pakon_proto.h"
 #include "pakon_setup.h"
+#include "pakon_dx.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -84,6 +85,13 @@ pakon_result pakon_cmd_run_seq(pakon_dev *dev, const pakon_seq *seq,
 pakon_result pakon_cmd_service_events(pakon_dev *dev, uint8_t low, uint8_t scn,
                                       unsigned timeout_ms, uint8_t *host_flags,
                                       unsigned *serviced);
+
+/* The same, adding each DX sensor block (`0x90`, pakon_dx.h) to `dx` (may be
+ * NULL). Every block is also logged at PAKON_DEBUG >= 2 as a `dx:` line. */
+pakon_result pakon_cmd_service_events_dx(pakon_dev *dev, uint8_t low,
+                                         uint8_t scn, unsigned timeout_ms,
+                                         uint8_t *host_flags, unsigned *serviced,
+                                         pakon_dx_roll *dx);
 
 #ifdef __cplusplus
 }

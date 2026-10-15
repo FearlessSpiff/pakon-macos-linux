@@ -306,15 +306,21 @@ NegMatrix then grey.
   an SSE job like Process/Export, then hand the browser the download), and
   consider `ZIP_STORED` for the TIFFs, since deflating large 16-bit images
   is most of the wait.
-- **DX barcode (frame numbers, film identity).** The event service already
-  reads the 30-byte `0x90` sensor block (decoded DX entries, layout in
-  pakon-reference `dx-barcode.md`) and discards it. First log it during one
-  scan to see whether this unit's sensor decodes at all (Ali Bosworth's
-  F-135+ decodes nothing); about 30 minutes, no new commands. If it does:
-  frame numbers for export labels, and the film product code. Not needed for
-  colour: the OEM install ships only default film/colour LUTs; the DX-keyed
-  data it does ship is 11 noise-reduction parameter files (inferred from the
-  file names, not traced in code).
+- **DX barcode (frame numbers, film identity).** Serial 3054's sensor
+  decodes: every `0x90` reply in our three scan captures parses, with one
+  parity-clean code per half frame (0A..36A on the 36-exposure roll) and the
+  film's product/generation code (`docs/PROTOCOL.md`, DX sensor block).
+  `pakon_dx` decodes the block, the event service logs it (`dx:` lines at
+  `PAKON_DEBUG=2`), and a scan prints a summary and writes `<raw>.dx.json`.
+  The web app looks the code up in the OEM product-code table, shows the
+  film beside the raw, and writes its name (EXIF ImageDescription, XMP
+  description and keyword) and ISO (EXIF/XMP) into every exported JPEG and
+  TIFF; a code the 2006 table does not know (both our full rolls) writes
+  nothing. Frame numbers are not used (placing codes on frames is the open
+  question in dx-barcode.md). Not needed for colour: the OEM
+  install ships only default film/colour LUTs; the DX-keyed data it does
+  ship is 11 noise-reduction parameter files (inferred from the file names,
+  not traced in code).
 - **Release CI: installable builds on every release.** Each time a release is
   cut (a `v*` tag / GitHub release), a CI workflow builds executables for
   **macOS**, **Windows** and **Linux (`.deb`)** and publishes them to a

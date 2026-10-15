@@ -110,22 +110,25 @@ static int flags_error(uint8_t addr, uint8_t flags)
     return (flags & 0x20) || (addr != AD_HOST && (flags & 0x04));
 }
 
+/* Send one frame with the reply rules; `*reply_out` (may be NULL) gets the
+ * accepted reply. */
 static pakon_result run_one(pakon_dev *dev, const pakon_packet *pkt,
-                            unsigned timeout_ms)
+                            unsigned timeout_ms, pakon_packet *reply_out)
 {
     uint8_t addr = pkt->data[0];
-    pakon_packet reply;
+    pakon_packet buf;
+    pakon_packet *reply = reply_out ? reply_out : &buf;
     pakon_result r;
 
     if (pkt->type == PH_READ_STATUS) {
         for (unsigned t = 1; t <= BUSY_POLL_TRIES; t++) {
-            r = pakon_cmd(dev, pkt, &reply, timeout_ms);
+            r = pakon_cmd(dev, pkt, reply, timeout_ms);
             if (r != PAKON_OK)
                 return r;
-            if (reply.type != PH_READ_STATUS || reply.count < 2 ||
-                pakon_packet_addr(&reply) != addr)
+            if (reply->type != PH_READ_STATUS || reply->count < 2 ||
+                pakon_packet_addr(reply) != addr)
                 return PAKON_ERR_PROTO;
-            uint8_t flags = reply.data[1];
+            uint8_t flags = reply->data[1];
             if (flags_error(addr, flags))
                 return PAKON_ERR_STATUS;
             if (!(flags & 0x01))
@@ -138,21 +141,21 @@ static pakon_result run_one(pakon_dev *dev, const pakon_packet *pkt,
     }
 
     for (unsigned t = 1; t <= REPLY_TRIES; t++) {
-        r = pakon_cmd(dev, pkt, &reply, timeout_ms);
+        r = pakon_cmd(dev, pkt, reply, timeout_ms);
         if (r != PAKON_OK)
             return r;
-        if (reply.count < 2 || pakon_packet_addr(&reply) != addr)
+        if (reply->count < 2 || pakon_packet_addr(reply) != addr)
             return PAKON_ERR_PROTO;
-        uint8_t st = reply.data[1];
+        uint8_t st = reply->data[1];
         if (pkt->type == PH_READ) {
-            if (reply.type != PH_READ)
+            if (reply->type != PH_READ)
                 return PAKON_ERR_PROTO;
             if (flags_error(addr, st))
                 return PAKON_ERR_STATUS;
             if (!(st & 0x11))
                 return PAKON_OK;
         } else {
-            if (reply.type != PH_RESPONSE)
+            if (reply->type != PH_RESPONSE)
                 return PAKON_ERR_PROTO;
             if (st == PS_SUCCESS || st == PS_SUCCESS_8)
                 return PAKON_OK;
@@ -165,8 +168,35 @@ static pakon_result run_one(pakon_dev *dev, const pakon_packet *pkt,
     return PAKON_ERR_STATUS;
 }
 
-pakon_result pakon_cmd_run_seq(pakon_dev *dev, const pakon_seq *seq,
-                               unsigned timeout_ms)
+/* The reply to `01 03 <low> 1e 90`: log the DX sensor block and add it to
+ * `roll` (may be NULL). */
+static void take_dx_block(const pakon_packet *reply, pakon_dx_roll *roll)
+{
+    pakon_dx_block b;
+    char line[384];
+
+    if (reply->count < 2 + PAKON_DX_REPLY_LEN ||
+        pakon_dx_parse(reply->data + 2, reply->count - 2, &b) != 0) {
+        pakon_hexdump(PAKON_LOG_WARN, "dx: unparsed sensor block",
+                      reply->data, reply->count);
+        return;
+    }
+    pakon_logf(PAKON_LOG_INFO, "dx: %s", pakon_dx_format(&b, line, sizeof line));
+    if (roll)
+        pakon_dx_roll_add(roll, &b);
+}
+
+static int is_dx_read(const pakon_packet *p, uint8_t low)
+{
+    return p->type == PH_READ && p->count >= 3 && p->data[0] == low &&
+           p->data[1] == PAKON_DX_REPLY_LEN && p->data[2] == 0x90;
+}
+
+/* pakon_cmd_run_seq; with `low` nonzero, DX sensor block reads from it go to
+ * take_dx_block. */
+static pakon_result run_seq(pakon_dev *dev, const pakon_seq *seq,
+                            unsigned timeout_ms, uint8_t low,
+                            pakon_dx_roll *roll)
 {
     if (!dev || !seq || seq->overflow)
         return PAKON_ERR_PARAM;
@@ -177,21 +207,39 @@ pakon_result pakon_cmd_run_seq(pakon_dev *dev, const pakon_seq *seq,
             return PAKON_ERR_PARAM;
     }
     for (size_t i = 0; i < seq->n; i++) {
+        pakon_packet reply;
         if (seq->delay_ms[i])
             sleep_ms(seq->delay_ms[i]);
-        pakon_result r = run_one(dev, &seq->pkt[i], timeout_ms);
+        pakon_result r = run_one(dev, &seq->pkt[i], timeout_ms, &reply);
         if (r != PAKON_OK) {
             pakon_logf(PAKON_LOG_ERROR, "sequence stopped at frame %zu: %s",
                        i, pakon_result_str(r));
             return r;
         }
+        if (low && is_dx_read(&seq->pkt[i], low))
+            take_dx_block(&reply, roll);
     }
     return PAKON_OK;
+}
+
+pakon_result pakon_cmd_run_seq(pakon_dev *dev, const pakon_seq *seq,
+                               unsigned timeout_ms)
+{
+    return run_seq(dev, seq, timeout_ms, 0, NULL);
 }
 
 pakon_result pakon_cmd_service_events(pakon_dev *dev, uint8_t low, uint8_t scn,
                                       unsigned timeout_ms, uint8_t *host_flags,
                                       unsigned *serviced)
+{
+    return pakon_cmd_service_events_dx(dev, low, scn, timeout_ms, host_flags,
+                                       serviced, NULL);
+}
+
+pakon_result pakon_cmd_service_events_dx(pakon_dev *dev, uint8_t low,
+                                         uint8_t scn, unsigned timeout_ms,
+                                         uint8_t *host_flags, unsigned *serviced,
+                                         pakon_dx_roll *dx)
 {
     const uint8_t poll[1] = { AD_HOST };
     pakon_packet pkt, reply;
@@ -224,7 +272,7 @@ pakon_result pakon_cmd_service_events(pakon_dev *dev, uint8_t low, uint8_t scn,
         pakon_seq seq;
         pakon_seq_init(&seq);
         pakon_event_followup(&seq, addrs[i], status, addrs[i] == low);
-        if ((r = pakon_cmd_run_seq(dev, &seq, timeout_ms)) != PAKON_OK)
+        if ((r = run_seq(dev, &seq, timeout_ms, low, dx)) != PAKON_OK)
             return r;
         pakon_logf(PAKON_LOG_INFO, "event service: 0x%02x status 0x%02x acknowledged",
                    addrs[i], status);

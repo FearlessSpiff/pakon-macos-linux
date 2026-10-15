@@ -30,10 +30,17 @@ libusb-1.0
     Linked at build time. LGPL-2.1-or-later. Not distributed as part of this
     source tree.
 
-Python runtime dependencies (web/requirements.txt)
-    FastAPI, uvicorn, python-multipart, numpy, tifffile, Pillow, pyusb — each
-    under its own permissive license (MIT / BSD / HPND). Not distributed as
-    part of this source tree.
+Python runtime dependencies (web/requirements.txt, packaging/macos)
+    FastAPI, uvicorn, numpy, tifffile, Pillow, pyusb, unicorn, pefile,
+    certifi, and pywebview for the Mac app — each under its own license. Not
+    distributed as part of this source tree.
+
+oem/, profiles/
+    Files from the original Kodak/Pakon F-X35 software, used as-is: the
+    colour engine PakonIMAu.dll, its scene-balance parameters, the DX
+    product-code table (oem/ansel/common/common-ProdCodeTable.dpi), and the
+    colour profiles and correction data (© Eastman Kodak Company). They are
+    NOT covered by the AGPL. See oem/README.md and profiles/README.md.
 
 test/fixtures/eeprom/
     Eight unmodified EEPROM section dumps (base F-135 serial 2233, F-135+
