@@ -16,14 +16,19 @@ the OEM's image processing. © Eastman Kodak Company.
 - **`_ClientColNegMat.txt`** — ColNeg 3×3 + offset crosstalk matrix (the
   `_C41_MAT`/`_C41_OFF` constants; off by default — over-subtracts G/B here).
 - **`Defaults.ini`** — per-film-product colour-slider defaults (mostly neutral).
+- **`ColRevLut1.pf`** — the slide path's device link, "Pakon CMY to ROMM12"
+  (ICC lut16): PosMatrix output → 12-bit ROMM. `--slide` / `render_slide`.
+- **`romm.pf`** — ROMM RGB input profile; the slide path's `CRInputProfile`.
 
 ## Available for future use
 
 - **`satplus03..15.pf` / `satminus03..15.pf`** — saturation-variant rendering
   profiles (could back a `--saturation` option).
-- **`romm.pf`, `unity.pf`** — alternate output colourspaces (ROMM / Kodak Lab).
+- **`unity.pf`** — alternate output colourspace (Kodak Lab).
 - **`cold_bw.pf`, `warm_bw_ld0_9_22.pf`, `sepia_*.pf`** — B&W / sepia looks.
-- **`ColRevLut1.pf`, `ColRevLutS6.lut`** — colour-reversal (slide/positive) path.
+- **`ColRevLutS6.lut`** — a 4096-entry 12-bit tone curve. `PIBegin` loads it
+  into a global that nothing in `PakonIMAu.dll` reads, so the OEM never applies
+  it.
 
 Re-extract from the OEM install if needed; see the `[[oem-software-cache]]`
 memory for the location.
