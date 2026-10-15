@@ -26,6 +26,7 @@ add_library(pakon STATIC
   src/pakon_setup.c
   src/pakon_lightcal.c
   src/pakon_fw.c
+  src/pakon_dx.c
 )
 target_include_directories(pakon PUBLIC ${CMAKE_SOURCE_DIR}/include)
 # libusb is an implementation detail of the transport layer, but a static
@@ -74,6 +75,10 @@ add_executable(test_fw test/test_fw.c)
 target_link_libraries(test_fw PRIVATE pakon)
 add_test(NAME test_fw COMMAND test_fw ${CMAKE_SOURCE_DIR})
 
+add_executable(test_dx test/test_dx.c)
+target_link_libraries(test_dx PRIVATE pakon)
+add_test(NAME test_dx COMMAND test_dx ${CMAKE_SOURCE_DIR}/test/fixtures/dx)
+
 # EEPROM decoding and mocked read-only transfers require only Python stdlib.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
@@ -82,6 +87,9 @@ if(Python3_Interpreter_FOUND)
   # Skips itself when numpy/Pillow are missing from that interpreter.
   add_test(NAME test_image_colour
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/test_image_colour.py)
+  # Skips itself when numpy/Pillow/tifffile are missing.
+  add_test(NAME test_dx_metadata
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/test_dx_metadata.py)
   # Skips itself when numpy/unicorn/pefile are missing.
   add_test(NAME test_oem_sba
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/test/test_oem_sba.py)

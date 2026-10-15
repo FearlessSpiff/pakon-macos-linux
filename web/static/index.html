@@ -652,6 +652,7 @@
     <div class="raw-info">
       <div class="raw-title" id="raw-name">No raw loaded — run a scan or open one</div>
       <div class="raw-sub" id="raw-dir"></div>
+      <div class="raw-sub" id="raw-dx" hidden></div>
     </div>
     <label class="field">Film
       <select id="proc-film" aria-label="Film type of the raw">
@@ -1000,12 +1001,17 @@
   });
 
   // The raw being processed: file name on top, its folder underneath.
-  function showRaw(path) {
+  // `dx`: the film the scanner read from the DX edge code (name, iso), if known.
+  function showRaw(path, dx) {
     const cut = path ? path.lastIndexOf('/') : -1;
     $('raw-name').textContent = path ? path.slice(cut + 1) : 'No raw loaded — run a scan or open one';
     $('raw-dir').textContent = path ? path.slice(0, cut) : '';
     $('raw-slot').title = path || '';
     $('raw-slot').classList.toggle('set', !!path);
+    $('raw-dx').textContent = dx
+      ? `DX: ${dx.name ? dx.name + ' · ' : ''}ISO ${dx.iso} — saved in the exports`
+      : '';
+    $('raw-dx').hidden = !dx;
   }
 
   // ── Spaces ───────────────────────────────────────────────────────────────
@@ -1091,7 +1097,7 @@
         $('scan-prog-label').textContent = `Complete — ${ev.mb} MB`;
         setMsg($('scan-msg'), `Scan complete (${ev.mb} MB)`, 'ok');
         if (ev.path) {
-          showRaw(ev.path);
+          showRaw(ev.path, ev.dx);
           if (ev.film) $('proc-film').value = ev.film;
           showSpace('frames');
           processRaw();
@@ -1218,7 +1224,7 @@
     });
     const d = await resp.json();
     if (!resp.ok) { setMsg($('browse-msg'), d.error || 'could not open', 'err'); return; }
-    showRaw(d.path);
+    showRaw(d.path, d.dx);
     if (d.film) $('proc-film').value = d.film;
     $('browse-modal').classList.add('hidden');
     showSpace('process');   // watch the progress there; Frames opens when done

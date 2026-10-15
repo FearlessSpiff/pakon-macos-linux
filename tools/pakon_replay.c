@@ -843,10 +843,13 @@ static pakon_result sm_cmd(pakon_dev *dev, const uint8_t *raw, size_t n,
  * event pending we count an idle window. Primary stop is end-of-roll white. */
 static void sm_scan_loop(pakon_dev *dev, FILE *img, unsigned long long *img_bytes,
                          unsigned long *nimg, unsigned long *ncmd, unsigned long *errs,
-                         unsigned timeout, unsigned long max_mb, int *film_seen_out)
+                         unsigned timeout, unsigned long max_mb, int *film_seen_out,
+                         pakon_dx_roll *dx)
 {
     unsigned events = 0, overflows = 0;
+    char dx_line[256];
 
+    pakon_dx_roll_init(dx);
     uint8_t buf[20480];
     int film_seen = 0;
     unsigned trail_white = 0, idle = 0;
@@ -869,8 +872,8 @@ static void sm_scan_loop(pakon_dev *dev, FILE *img, unsigned long long *img_byte
              * scanning); unacknowledged events are the suspected cause of
              * the stream dying part-way. --scan-sm is F-135 only. */
             uint8_t hf = 0;
-            if (pakon_cmd_service_events(dev, AD_PICL, AD_PICM, timeout, &hf,
-                                         &events) != PAKON_OK)
+            if (pakon_cmd_service_events_dx(dev, AD_PICL, AD_PICM, timeout, &hf,
+                                            &events, dx) != PAKON_OK)
                 (*errs)++;
             if (hf & PAKON_HOST_FLAG_OVERFLOW)
                 overflows++;
@@ -904,8 +907,8 @@ static void sm_scan_loop(pakon_dev *dev, FILE *img, unsigned long long *img_byte
          * the bus (the old re-arm-on-empty bug). The SM_LOAD_WAIT / SM_MAX_EMPTY
          * bounds cap the spin; teardown (Phase 3) is what actually stops it. */
         uint8_t st = 0xff;
-        if (pakon_cmd_service_events(dev, AD_PICL, AD_PICM, timeout, &st,
-                                     &events) != PAKON_OK)
+        if (pakon_cmd_service_events_dx(dev, AD_PICL, AD_PICM, timeout, &st,
+                                        &events, dx) != PAKON_OK)
             (*errs)++;
         (*ncmd)++;
         if (st & PAKON_HOST_FLAG_EVENT) continue;   /* serviced; keep reading */
@@ -933,6 +936,7 @@ static void sm_scan_loop(pakon_dev *dev, FILE *img, unsigned long long *img_byte
     }
     printf("  [sm] event service: %u events acknowledged, %u FIFO-overflow flags\n",
            events, overflows);
+    printf("  [sm] dx: %s\n", pakon_dx_roll_format(dx, dx_line, sizeof dx_line));
     if (film_seen_out) *film_seen_out = film_seen;
 }
 
@@ -987,6 +991,26 @@ static long sm_replay_teardown(pakon_dev *dev, const char *script, unsigned time
     }
     fclose(fp);
     return replayed;
+}
+
+/* The film's DX code, next to the raw as OUT.dx.json (the web app puts it in
+ * the exports' metadata). Nothing is written when no code was read. */
+static void write_dx_json(const char *image_path, const pakon_dx_roll *dx)
+{
+    uint8_t prod, gen;
+    char path[1024];
+    if (!pakon_dx_roll_film(dx, &prod, &gen))
+        return;
+    snprintf(path, sizeof path, "%s.dx.json", image_path);
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        fprintf(stderr, "cannot write '%s'\n", path);
+        return;
+    }
+    fprintf(f, "{\n  \"version\": 1,\n  \"product\": %u,\n  \"generation\": %u,\n"
+               "  \"codes\": %u,\n  \"rejected\": %u,\n  \"reads\": %u\n}\n",
+            prod, gen, dx->codes, dx->rejected, dx->blocks);
+    fclose(f);
 }
 
 static int do_scan_sm(const char *script, const char *image_path, unsigned timeout,
@@ -1085,8 +1109,10 @@ static int do_scan_sm(const char *script, const char *image_path, unsigned timeo
             printf("  [sm] no motor-start (a0) in script; taking over at end of "
                    "script\n");
         int film_seen = 0;
+        static pakon_dx_roll dx;
         sm_scan_loop(dev, img, &img_bytes, &nimg, &ncmd, &errs, timeout, max_mb,
-                     &film_seen);
+                     &film_seen, &dx);
+        write_dx_json(image_path, &dx);
         if (!film_seen)
             fprintf(stderr, "  [sm] WARNING: no film ever detected in the stream "
                     "(stale device state / nothing loaded?)\n");
@@ -2288,8 +2314,10 @@ static int do_scan_code(unsigned timeout, const char *eeprom_dir,
     unsigned long long img_bytes = 0;
     unsigned long nimg = 0, ncmd = 0, errs = 0;
     int film_seen = 0;
+    static pakon_dx_roll dx;
     sm_scan_loop(dev, img, &img_bytes, &nimg, &ncmd, &errs, timeout, max_mb,
-                 &film_seen);
+                 &film_seen, &dx);
+    write_dx_json(image_path, &dx);
     printf("scan-code: %lu image reads, %llu bytes -> %s (%lu errors)%s\n", nimg,
            img_bytes, image_path, errs, film_seen ? "" : " -- no film seen");
     rc = film_seen ? 0 : 1;
@@ -2448,7 +2476,8 @@ static void usage(const char *argv0)
         "                compute gain/offset); present the open gate, no film\n"
         "  --cal-lines N  CCD lines to average per measurement (default 32)\n"
         "  --flat-out FILE  where --light-cal writes the flat field (default\n"
-        "                DIR/flatfield.json; --scan-code writes OUT.flat.json)\n"
+        "                DIR/flatfield.json; --scan-code writes OUT.flat.json,\n"
+        "                and OUT.dx.json when the film's DX code was read)\n"
         "  --cal-exposure N  nominal CcdExposure for the gain phase (default 256)\n"
         "  --prelude FILE replay a .pakscan setup spine (CCD+lamp init) before\n"
         "                calibrating -- needed for the gain phase (illumination)\n"

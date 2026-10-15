@@ -41,7 +41,7 @@ from fastapi import Body, FastAPI
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import eeprom, orders, telemetry, update
+from . import dx, eeprom, orders, telemetry, update
 from .decode import (WORK_DIR, PREVIEW_PATH, FILMS, prescan, export_frames,
                      make_contact_sheet, find_eeprom_dir, clear_work)
 
@@ -276,7 +276,7 @@ async def _detect_model() -> str | None:
 # "the motor runs, feed the film".
 _SCAN_LOG_KEYS = ("calibrated:", "film detected", "end-of-roll", "stream ended",
                   "no film fed", "safety cap", "event service:", "scan-code:",
-                  "teardown", "failed", "did not converge", "insufficient")
+                  "teardown", "failed", "did not converge", "insufficient", "] dx:")
 _FEED_KEY = "feed the film now"
 
 
@@ -402,7 +402,7 @@ async def _scan_stream(film: str):
     if proc.returncode == 0:
         _save_film(out_path, film)
         yield _sse({"type": "done", "bytes": size, "mb": mb, "path": str(out_path),
-                    "film": film})
+                    "film": film, "dx": dx.for_raw(out_path)})
     else:
         yield _sse({"type": "error",
                     "message": f"scan failed (exit {proc.returncode})"})
@@ -446,7 +446,7 @@ async def _scan_code_stream(eeprom_dir: Path, film: str):
     if code == 0:
         _save_film(out_path, film)
         yield _sse({"type": "done", "bytes": size, "mb": mb, "path": str(out_path),
-                    "film": film})
+                    "film": film, "dx": dx.for_raw(out_path)})
     else:
         yield _sse({"type": "error",
                     "message": f"scan failed (exit {code}) — see the log"})
@@ -729,7 +729,8 @@ async def api_open(path: str = Body(..., embed=True)):
     _state["scan_path"] = raw.resolve()
     _state["frames"] = []
     _state["prescan"] = None
-    return {"path": str(_state["scan_path"]), "film": _raw_film(_state["scan_path"])}
+    return {"path": str(_state["scan_path"]), "film": _raw_film(_state["scan_path"]),
+            "dx": dx.for_raw(_state["scan_path"])}
 
 
 @app.get("/api/preview")
@@ -768,7 +769,8 @@ async def api_export_frames(
                              frame_w=meta["frame_w"], progress=prog,
                              rpd_balance=meta.get("rpd_balance"),
                              roll_centres=meta.get("centres"),
-                             film=meta.get("film", "c41"))
+                             film=meta.get("film", "c41"),
+                             dx_film=dx.for_raw(raw) if raw is not None else None)
 
     def _done(result):
         _state["frames"] = result
