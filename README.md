@@ -49,7 +49,6 @@ It's an independent project, not made or supported by Kodak.
   details (for example "Kodak Gold 400").
 - **Even edges.** Pakon calibrates the scanner's light before every scan, so
   the edges of each picture aren't darker than the middle.
-- **Ejects the film for you**, and tells you when a new version is out.
 
 ![Pakon's Export page: save the roll as JPEGs, TIFFs, raw negatives or a contact sheet, above a grid of finished frames](docs/images/export.jpg)
 
