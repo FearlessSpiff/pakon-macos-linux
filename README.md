@@ -144,8 +144,9 @@ The web service does this step by itself (see [Web service](#web-service)).
 ./build/pakon_replay --scan-code --eeprom-dir backups/eeprom/F135-SERIAL --image scan.raw
 ```
 
-`--film bw` scans silver B&W film (default `c41`, colour negative): the
-calibration caps and scan LED duties use the OEM's B&W film-base densities.
+`--film bw` scans silver B&W film and `--film slide` unmounted slide (E-6)
+strips (default `c41`, colour negative): the calibration caps and scan LED
+duties use the OEM's film-base densities for that film type.
 
 Runs setup, the light calibration (about a minute: **keep the film out**, it
 measures the open gate), then starts the motor and prints
@@ -242,6 +243,7 @@ Key decoder options:
 |------|---------|--------|
 | `--invert-c41` | off | OEM-faithful C-41 positive (ColNeg log LUT + Dmin) |
 | `--bw` | off | silver B&W: with `--invert-c41`, the same inversion then grey (16-bit grey TIFF, grey JPEG) |
+| `--slide` | off | slide film: no inversion; OEM positive path (PosMatrix → `ColRevLut1.pf` → `romm.pf`) |
 | `--jpeg` | off | also write the `rpd.pf`-rendered JPEG (needs `profiles/rpd.pf`) |
 | `--rotate {90,180,270}` | 0 | rotate each output frame |
 | `--frames N` | auto | optional hard override of the auto-detected count |

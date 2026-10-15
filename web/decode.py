@@ -37,6 +37,10 @@ from pakon_image import (  # noqa: E402
     _c41_lut,
     load_neg_matrix,
     render_oem,
+    render_slide,
+    slide_path,
+    measure_slide_flare,
+    slide_frame_grid,
     to_grey,
     RpdLut,
     apply_flat_field,
@@ -94,6 +98,7 @@ def find_eeprom_dir() -> Path | None:
 
 
 _OEM = {"key": None, "value": None}
+_SLIDE = {"key": None, "value": None}
 
 
 def _oem_path():
@@ -110,6 +115,20 @@ def _oem_path():
             _OEM["value"] = None
         _OEM["key"] = key
     return _OEM["value"]
+def _slide_path():
+    """(PosMatrix, LUT, ColRevLink, romm.pf table) for slides: the unit's
+    PosMatrix when its EEPROM archive is found, else the factory one."""
+    eeprom_dir = find_eeprom_dir()
+    key = str(eeprom_dir)
+    if _SLIDE["key"] != key:
+        try:
+            _SLIDE["value"] = slide_path(None if eeprom_dir is None else key)
+        except (OSError, ValueError):
+            _SLIDE["value"] = slide_path(None)
+        _SLIDE["key"] = key
+    return _SLIDE["value"]
+
+
 def _sba_on():
     """The OEM scene balance (tools/oem_sba.py) runs when its emulator and
     oem/ are available; PAKON_OEM_SBA=0 turns it off."""
@@ -200,13 +219,14 @@ def _build_ribbon(raw_path, emit):
     return rgb
 
 
-FILMS = ("c41", "bw")   # colour negative, silver B&W
+FILMS = ("c41", "bw", "slide")   # colour negative, silver B&W, slide (E-6)
 
 
 def prescan(raw_path, progress=None, film="c41") -> dict:
     """Stage 1. Build + cache the ribbon, render the long preview strip, and
     auto-detect initial frame centres. Returns a metadata dict (all JSON-able).
-    film="bw" renders silver B&W: the same inversion, then grey."""
+    film="bw" renders silver B&W: the same inversion, then grey; "slide"
+    renders reversal film through the OEM positive path (no inversion)."""
     grey = film == "bw"
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     clear_work()                          # the last roll's frames
@@ -222,7 +242,8 @@ def prescan(raw_path, progress=None, film="c41") -> dict:
     base = measure_dmin(rgb, pct=99.5)
 
     emit("Detecting frames", 0.68)
-    cut_rows, pitch = find_frame_grid(rgb)
+    grid = slide_frame_grid(rgb) if film == "slide" else None
+    cut_rows, pitch = grid or find_frame_grid(rgb)
     centres = [int((cut_rows[i] + cut_rows[i + 1]) // 2)
                for i in range(len(cut_rows) - 1)]
     if not centres:                       # fallback: single image
@@ -237,7 +258,11 @@ def prescan(raw_path, progress=None, film="c41") -> dict:
     small = np.ascontiguousarray(rgb[::ds, ::ds])
     oem = _oem_path()
     balance = None
-    if oem is not None:                                  # OEM colour path
+    flare = None
+    if film == "slide":
+        flare = measure_slide_flare(rgb)                 # stray light, per roll
+        pos = render_slide(small, *_slide_path(), flare=flare)
+    elif oem is not None:                                # OEM colour path
         balance = oem_roll_balance(small, oem[0], oem[1])  # once per roll
         fw = int(min(_FRAME_W, pitch))
         shifts = _sba_shifts([rgb[max(0, c - fw // 2):c + fw // 2] for c in centres], oem)
@@ -269,12 +294,14 @@ def prescan(raw_path, progress=None, film="c41") -> dict:
         "preview_w": int(prev_w), "preview_h": int(prev_h),
         "scale": float(scale),             # preview_x = full_row * scale
         "film": film,
+        "flare": None if flare is None else [float(x) for x in flare],
     }
 
 
 def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
                   frame_w=_FRAME_W, progress=None, rpd_balance=None,
-                  roll_centres=None, film="c41", dx_film=None) -> list[dict]:
+                  roll_centres=None, film="c41", flare=None,
+                  dx_film=None) -> list[dict]:
     """Stage 2. Crop the cached ribbon at each confirmed centre, invert and
     render, write TIFF/JPEG. With the scanner's EEPROM archive and rpd.pf this
     is the OEM F-135 colour path (density LUT -> NegMatrix -> rpd.pf), for both
@@ -288,11 +315,14 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
     weighs the exported frames against the whole roll, so a few similar
     frames exported alone are not pushed toward their own average.
 
-    film="bw" (silver B&W) writes 16-bit grey TIFFs and grey JPEGs.
+    film="bw" (silver B&W) writes 16-bit grey TIFFs and grey JPEGs; "slide"
+    renders through the OEM positive path, with no scene balance, minus
+    `flare` (the prescan's measure_slide_flare).
 
     `dx_film` (web/dx.py lookup) puts the film's name and ISO in every file's
     metadata; None writes none."""
     grey = film == "bw"
+    slide = _slide_path() if film == "slide" else None
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     clear_work()                          # the last export's frames
 
@@ -319,10 +349,12 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
 
     # OEM scene balance of the confirmed frames against the whole roll (all
     # crops first); falls back to the prescan roll balance.
-    if oem is not None and _sba_on():
-        emit("OEM scene balance", 0.0)
-    roll = [crop_at(c, frame_w) for c in roll_centres] if roll_centres else None
-    shifts = _sba_shifts([crop(i) for i in range(n)], oem, roll)
+    shifts = None
+    if slide is None:
+        if oem is not None and _sba_on():
+            emit("OEM scene balance", 0.0)
+        roll = [crop_at(c, frame_w) for c in roll_centres] if roll_centres else None
+        shifts = _sba_shifts([crop(i) for i in range(n)], oem, roll)
 
     for i in range(n):
         emit(f"Exporting frame {i + 1}/{n}", (i + 1) / max(1, n))
@@ -330,7 +362,10 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
         if rot_k:
             part = np.ascontiguousarray(np.rot90(part, k=rot_k))
 
-        if oem is not None:                           # OEM colour path
+        if slide is not None:                         # positive, no inversion
+            pos = render_slide(part, *slide, flare=flare)
+            rendered = (pos >> 8).astype(np.uint8)
+        elif oem is not None:                         # OEM colour path
             if shifts is not None:
                 bal = (np.ones(3, np.float32), shifts[i])
             else:

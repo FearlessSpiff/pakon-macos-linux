@@ -243,7 +243,7 @@ NegMatrix then grey.
 
 - **Silver B&W — done 2026-10-13, untested on film:** `pakon_replay
   --scan-code --film bw` calibrates and scans with the "other" densities
-  (`pakon_lc_density_bw`) and records `"film": "bw"` in `RAW.flat.json`. The
+  (`pakon_lc_density_other`) and records `"film": "bw"` in `RAW.flat.json`. The
   scan stays in the Base 16 + IR mode (the IR lane is scanned and ignored;
   ICE is not implemented), so no untested IR-off timing is needed.
   Decode: `render_oem(..., grey=True)` averages the three RPD channels, then
@@ -251,7 +251,44 @@ NegMatrix then grey.
   Scan and Process, kept per raw in `RAW.film`. Needs a strip of silver film
   to check the duties and the end-of-roll detection (clear B&W base should
   read ~60–70% of the open gate, under the white threshold).
-- Left: B&W C-41 (0.10/0.25/0.25/0.08), slide (PosMatrix, `ColRevLut`).
+- **Slide (E-6) — done 2026-10-14:** `pakon_replay
+  --scan-code --film slide` scanned at first with the "other" densities, as for silver
+  B&W (now 0.12 on R/G/B, see below) (`TLB.dll` refuses film type 2 in calibration itself, so it calibrates
+  separately and applies the type at scan; ours does the same). The IR lane
+  is scanned and ignored. Decode (`render_slide`, `pakon_image.py --slide`,
+  web film type "Slide (E-6)"): the same density LUT → the unit's PosMatrix
+  (0.25·I on all three units known; the factory value is used without an
+  EEPROM archive) → `ColRevLut1.pf`, a lut16 device link "Pakon CMY to
+  ROMM12", evaluated from the tag → `romm.pf` → sRGB. No scene balance (the
+  OEM runs Ansel in a positive mode, not modelled). `autocrop` keeps dark
+  rows for slides, because the gaps between frames are black. Needs a strip
+  of slide film: check the colour against a lightbox, and that
+  overexposed (near-clear) frames don't trip end-of-roll white.
+  First strip scanned 2026-10-14 (serial 3054): whole strip, 0 errors,
+  plausible colour, warm overall. Shadows are the weak point (noise floor
+  ~D 3.3, blacks lifted by stray light to D 2.6–3); the decode now computes
+  density exactly and removes half the stray light measured between frames
+  (`--slide-flare`, docs/IMAGING.md). More light at scan (2026-10-15,
+  untested on hardware): slides now use film-base densities 0.12/0.12/0.12/0.08
+  instead of the OEM's "other" row, so calibration raises the LED current and
+  the scan runs ~1.32x the open-gate light (~1/3 stop more shadow range);
+  `RAW.flat.json` records `scan_duties` and the decoder scales the flat gain by
+  calibration duty / scan duty for slides. Rescanned the same strip
+  2026-10-15: currents 2/1/1/2 (red stepped up), scan duties
+  1185/1229/1036/1641; the decoded densities match the first scan (median
+  1.28/1.45/1.68 vs 1.28/1.42/1.67), so the compensation is right; the noise
+  floor in the black gaps fell 13/22/23% (R/G/B, 24.6/18.7/17.5 -> 21.3/14.5/13.5
+  counts); raw clipping only on the leader/tail edges (first/last 300 rows),
+  none in pictures. Visually a subtle gain. The gap level also fell after
+  compensation (89 -> 73 counts in G), so part of the "stray light" is additive
+  (not scaled by the LEDs), likely a residual black-level error.
+  Second strip 2026-10-15: clean scan, but the detail-based frame grid
+  missed the gaps (pitch 2732) and the stray light measured at its cuts
+  crushed the shadows; slides now frame from the black gaps
+  (`slide_frame_grid`, pitch ~3180 on all three raws) and measure stray light
+  on the gap rows, capped at D 2. Still to do: slide orientation
+  (`--rotate 90` comes out wrong).
+- Left: B&W C-41 (0.10/0.25/0.25/0.08).
 
 ## Feature work (independent of the replay-free steps)
 
