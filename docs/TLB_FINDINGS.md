@@ -148,3 +148,11 @@ Gain_R/G/B, Offset_R/G/B, Current_R/G/B/Ir, DutyCycle_* (film), DutyCycleOpenGat
 - NegMatrix constants positive -> no film-base subtraction here; base likely neutralised by light calibration [I].
 - Roll balance FN_bKcdfsCorrections 0x10034a60: 3 roll values (film base?) [I] through same LUT+matrix; Ansel roll analysis over <=40 pictures.
 - ClientColNegLut.txt + ClientColNegMat_3x10.txt override only if both exist; shipped _ClientColNegLut.txt (leading underscore) is never loaded.
+
+### Positive (slide) path [C] (2026-10-14)
+- FUN_1000d880: film type 2 -> matrix at +0xC8 (PosMatrix0..29), same 3x10 polynomial, +0.5, clamp 0..4095; then PakonIMAu PIColorCorrectColRevPlanar (DAT_10075544+0x4c) with (planes, w, h, 0, 0). Types 1/4/8 -> +0x50 (NegMatrix), no further call.
+- Before it, FUN_10022a60 applies LUT +0x44 for type 2, else +0x40; FUN_1000dfc0 fills both with K*log10(16383/i) (K = +0x20, 3500), so they are identical unless ClientColRevLut.txt / ClientColRevMat_3x10.txt override.
+- PIBegin(…, romm.pf, rpd.pf, srgb.pf, ColRevLut1.pf, ColRevLutS6.lut): ColRevLut1.pf path -> PakonIMAu DAT_106b2f08, opened by PIColorCorrectColRevPlanar (FUN_102f7480(path, 2)) as a device link; ColRevLutS6.lut -> FUN_1001e0b0 -> 4096 u16 at DAT_106b3708, which has no other reference in PakonIMAu.dll (dead).
+- ColRevLut1.pf: KCMS 'link' class, "Pakon CMY to ROMM12", A2B0 mft2 3->3, grid 31, 511 input entries, 2 output entries (identity).
+- FindCorrections (FUN_10021590) refuses film type 2 (error 0x1b/0xf), so calibration runs under another type; the scan uses the "other" densities (FUN_10020230).
+- The Ansel balance call (DAT_10075544+100, flag 0x20) runs for every type; its mode word is 1 when the film type is odd (only colour neg, type 1) and 4 otherwise (positive 2, silver B&W 4, B&W C-41 8).

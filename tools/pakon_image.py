@@ -297,7 +297,13 @@ def find_flat_field(raw_path, eeprom_dir=None):
 def load_flat_field(path, width):
     """(dark, gain), each (width, 3) float32, for scan columns 0..width-1 from
     a flat-field JSON. Raises ValueError if the file does not cover `width`
-    columns (another resolution) or is malformed."""
+    columns (another resolution) or is malformed.
+
+    A slide scan runs its LEDs brighter than the calibration (pakon_replay
+    gives slides a film-base density of 0.12, so ~1.32x); the gain is scaled
+    by calibration duty / scan duty per channel so the film comes out at its
+    true transmission. Other films keep the OEM behaviour (their extra light
+    is part of what the NegMatrix expects)."""
     import json
     with open(path) as f:
         ff = json.load(f)
@@ -312,6 +318,11 @@ def load_flat_field(path, width):
     den = (bright - dark) - drift
     gain = np.where(den > 0, 64000.0 / np.maximum(den, 1e-9), 0.0)
     gain = np.minimum(gain, 0x3FFFF / 65536.0)          # the OEM 16.16 table cap
+    if ff.get("film") == "slide" and "scan_duties" in ff:
+        cal = np.asarray(ff["duties"][:3], np.float64)
+        scan = np.asarray(ff["scan_duties"][:3], np.float64)
+        if np.all(cal > 0) and np.all(scan > 0):
+            gain = gain * (cal / scan)[:, None]
     return (dark[:, px0:].T.astype(np.float32),
             gain[:, px0:].T.astype(np.float32))
 
@@ -330,9 +341,7 @@ def apply_flat_field(rgb, flat, chunk=2048):
     return rgb
 
 
-def load_neg_matrix(eeprom_dir):
-    """The unit's 3x10 NegMatrix (rows R, G, B) from an EEPROM archive made by
-    tools/pakon_eeprom.py backup. Raises ValueError if it does not decode."""
+def _load_matrix(eeprom_dir, key):
     import importlib.util
     here = os.path.dirname(os.path.abspath(__file__))
     spec = importlib.util.spec_from_file_location(
@@ -340,18 +349,47 @@ def load_neg_matrix(eeprom_dir):
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     report = mod.read_archive(eeprom_dir)
-    m = report.get("decoded", {}).get("negative_matrix")
+    m = report.get("decoded", {}).get(key)
     if not report.get("decodable") or m is None:
-        raise ValueError(f"no usable NegMatrix in {eeprom_dir}")
+        raise ValueError(f"no usable {key} in {eeprom_dir}")
     return np.array(m, dtype=np.float32)
 
 
-def oem_rpd(rgb16, negmat, lut):
+def load_neg_matrix(eeprom_dir):
+    """The unit's 3x10 NegMatrix (rows R, G, B) from an EEPROM archive made by
+    tools/pakon_eeprom.py backup. Raises ValueError if it does not decode."""
+    return _load_matrix(eeprom_dir, "negative_matrix")
+
+
+# The PosMatrix every unit seen so far carries (serials 2233, 3054, 16402):
+# 0.25 on the diagonal, nothing else. Used for slides when no EEPROM archive
+# is at hand.
+POS_MATRIX_DEFAULT = np.hstack([0.25 * np.eye(3, dtype=np.float32),
+                                np.zeros((3, 7), np.float32)])
+
+
+def load_pos_matrix(eeprom_dir=None):
+    """The unit's 3x10 PosMatrix (slides) from an EEPROM archive, or the
+    factory default when `eeprom_dir` is None."""
+    if eeprom_dir is None:
+        return POS_MATRIX_DEFAULT.copy()
+    return _load_matrix(eeprom_dir, "positive_matrix")
+
+
+def oem_rpd(rgb16, negmat, lut, exact=False):
     """Raw 16-bit RGB -> 12-bit RPD (float32, 0..4095) the way TLB.dll does it:
     14-bit, the density LUT, then the 3x10 polynomial
-    m0 R + m1 G + m2 B + m3 R^2 + m4 G^2 + m5 B^2 + m6 RG + m7 BR + m8 GB + m9."""
-    x = np.clip((rgb16.astype(np.float32) - _RAW_BLACK) / 4.0, 1.0, 16383.0)
-    d = lut[x.astype(np.uint16)]
+    m0 R + m1 G + m2 B + m3 R^2 + m4 G^2 + m5 B^2 + m6 RG + m7 BR + m8 GB + m9.
+
+    exact=True computes the same density in floating point instead of through
+    the 14-bit table (for slides: at D 3 one 14-bit step is ~0.026 D, which
+    bands the shadows)."""
+    if exact:
+        x = np.clip((rgb16.astype(np.float32) - _RAW_BLACK) / 4.0, 0.25, 16383.0)
+        d = (3500.0 * np.log10(16383.0 / x)).astype(np.float32)
+    else:
+        x = np.clip((rgb16.astype(np.float32) - _RAW_BLACK) / 4.0, 1.0, 16383.0)
+        d = lut[x.astype(np.uint16)]
     r, g, b = d[..., 0], d[..., 1], d[..., 2]
     out = np.empty(d.shape, dtype=np.float32)
     for c in range(3):
@@ -381,23 +419,71 @@ class RpdLut:
 
     def apply(self, x01, chunk_rows=256):
         """(H, W, 3) float in [0, 1] -> sRGB float in [0, 1]."""
-        out = np.empty(x01.shape, dtype=np.float32)
-        t = self.table
-        for r0 in range(0, x01.shape[0], chunk_rows):
-            f = np.clip(x01[r0:r0 + chunk_rows], 0.0, 1.0) * (self.n - 1)
-            i = np.minimum(f.astype(np.int32), self.n - 2)
-            w = f - i
-            acc = 0.0
-            for dr in (0, 1):
-                wr = w[..., 0] if dr else 1.0 - w[..., 0]
-                for dg in (0, 1):
-                    wg = w[..., 1] if dg else 1.0 - w[..., 1]
-                    for db in (0, 1):
-                        wb = w[..., 2] if db else 1.0 - w[..., 2]
-                        acc = acc + (wr * wg * wb)[..., None] * t[
-                            i[..., 0] + dr, i[..., 1] + dg, i[..., 2] + db]
-            out[r0:r0 + chunk_rows] = acc
-        return out
+        return _interp3(self.table, x01, chunk_rows)
+
+
+def _interp3(t, x01, chunk_rows=256):
+    """Trilinear lookup of (H, W, 3) values in [0, 1] in an (n, n, n, 3)
+    table whose nodes span [0, 1] evenly."""
+    n = t.shape[0]
+    out = np.empty(x01.shape, dtype=np.float32)
+    for r0 in range(0, x01.shape[0], chunk_rows):
+        f = np.clip(x01[r0:r0 + chunk_rows], 0.0, 1.0) * (n - 1)
+        i = np.minimum(f.astype(np.int32), n - 2)
+        w = f - i
+        acc = 0.0
+        for dr in (0, 1):
+            wr = w[..., 0] if dr else 1.0 - w[..., 0]
+            for dg in (0, 1):
+                wg = w[..., 1] if dg else 1.0 - w[..., 1]
+                for db in (0, 1):
+                    wb = w[..., 2] if db else 1.0 - w[..., 2]
+                    acc = acc + (wr * wg * wb)[..., None] * t[
+                        i[..., 0] + dr, i[..., 1] + dg, i[..., 2] + db]
+        out[r0:r0 + chunk_rows] = acc
+    return out
+
+
+class ColRevLink:
+    """ColRevLut1.pf, the OEM slide step: a Kodak device link ("Pakon CMY to
+    ROMM12", ICC lut16: input curves, 31^3 grid, output curves) from the
+    PosMatrix output to 12-bit ROMM RGB. TLB.dll hands it to PakonIMAu.dll
+    (PIBegin), and PIColorCorrectColRevPlanar applies it in place after the
+    PosMatrix. Evaluated here straight from the tag, all in [0, 1]."""
+
+    def __init__(self, path):
+        import struct
+        with open(path, "rb") as f:
+            d = f.read()
+        tags = {}
+        for k in range(struct.unpack(">I", d[128:132])[0]):
+            sig, off, _ = struct.unpack(">4sII", d[132 + 12 * k:144 + 12 * k])
+            tags[sig] = off
+        off = tags.get(b"A2B0")
+        if off is None or d[off:off + 4] != b"mft2":
+            raise ValueError(f"{path}: no lut16 A2B0 tag")
+        ni, no, g = d[off + 8], d[off + 9], d[off + 10]
+        if ni != 3 or no != 3:
+            raise ValueError(f"{path}: expected a 3-in, 3-out link")
+        nin, nout = struct.unpack(">HH", d[off + 48:off + 52])
+        p = off + 52
+        self.inp = np.frombuffer(d, ">u2", 3 * nin, p).reshape(3, nin) / 65535.0
+        p += 6 * nin
+        self.clut = (np.frombuffer(d, ">u2", g ** 3 * 3, p)
+                     .reshape(g, g, g, 3) / 65535.0).astype(np.float32)
+        p += 6 * g ** 3
+        self.outp = np.frombuffer(d, ">u2", 3 * nout, p).reshape(3, nout) / 65535.0
+
+    @staticmethod
+    def _curves(tabs, x):
+        n = tabs.shape[1]
+        grid = np.linspace(0.0, 1.0, n)
+        return np.stack([np.interp(x[..., c], grid, tabs[c]) for c in range(3)],
+                        axis=-1).astype(np.float32)
+
+    def apply(self, x01):
+        """(H, W, 3) CMY in [0, 1] -> ROMM RGB in [0, 1]."""
+        return self._curves(self.outp, _interp3(self.clut, self._curves(self.inp, x01)))
 
 
 OEM_BALANCE = 0.5   # default roll-balance strength
@@ -448,6 +534,84 @@ def render_oem(rgb16, negmat, lut, rpd_lut, balance=None, grey=False):
     srgb = rpd_lut.apply(rpd / 4095.0)
     out = np.clip(srgb * 65535.0 + 0.5, 0.0, 65535.0).astype(np.uint16)
     return to_grey(out) if grey else out
+
+
+SLIDE_FLARE = 0.5         # default share of the measured veil to remove
+_SLIDE_FLOOR_D = 3.5      # density the black between slide frames should read
+_SLIDE_CAP_D = 2.0        # a "gap" lighter than this is not black film
+
+
+def find_slide_gaps(rgb, min_rows=80, k=3.0):
+    """The black film between slide frames, as [(first_row, last_row), ...].
+
+    A gap row is dark across the whole width, so even its brightest pixels
+    (95th percentile over the central columns) stay within `k` times the
+    level of the darkest rows of the strip; a dark scene almost always has
+    something bright in the row. Runs shorter than `min_rows` are dropped
+    (gaps are ~120-140 rows at Base 16; a dark detail inside a frame is
+    shorter). The leader and tail can show up as runs at the ends."""
+    cols = rgb.shape[1]
+    lum = rgb[:, cols // 8:cols - cols // 8:5].astype(np.float32).mean(axis=2)
+    p95 = np.percentile(lum - _RAW_BLACK, 95, axis=1)
+    dark = p95 < k * max(float(np.percentile(p95, 1)), 1.0)
+    edges = np.diff(np.concatenate([[0], dark.astype(np.int8), [0]]))
+    starts, ends = np.where(edges == 1)[0], np.where(edges == -1)[0] - 1
+    return [(int(a), int(b)) for a, b in zip(starts, ends) if b - a + 1 >= min_rows]
+
+
+def measure_slide_flare(rgb, strength=SLIDE_FLARE, gaps=None):
+    """Stray light on a slide strip, per channel, in raw counts above black.
+
+    The black film between frames should read about D 3.5 (~20 counts); on
+    serial 3054 it reads D 2.6-3 (70-170 counts), lifted by scattered light
+    (and a small black-level offset), which flattens the shadows. Measures
+    the median of the gap rows (find_slide_gaps) and returns `strength` x
+    (that - the D 3.5 level), to be subtracted from the raw before the
+    density step. Zeros when no gap is found; the level is capped at D 2
+    (640 counts), so a strip with no real gap cannot crush the shadows."""
+    if gaps is None:
+        gaps = find_slide_gaps(rgb)
+    if strength <= 0 or not gaps:
+        return np.zeros(3, np.float32)
+    cols = rgb.shape[1]
+    c0, c1 = cols // 8, cols - cols // 8
+    rows = np.concatenate([np.arange(a, b + 1) for a, b in gaps])
+    level = np.median(rgb[rows, c0:c1:4].astype(np.float32).reshape(-1, 3),
+                      axis=0) - _RAW_BLACK
+    floor = 64000.0 * 10.0 ** -_SLIDE_FLOOR_D
+    level = np.minimum(level, 64000.0 * 10.0 ** -_SLIDE_CAP_D)
+    return (strength * np.maximum(level - floor, 0.0)).astype(np.float32)
+
+
+def render_slide(rgb16, posmat, lut, link, romm_lut, flare=None):
+    """Raw 16-bit RGB frame of slide film -> 16-bit sRGB, the OEM positive
+    path (TLB.dll film type 2): the same density LUT, the unit's PosMatrix
+    (0.25 * density, 875 codes per decade, no inversion), the ColRevLut1.pf
+    link to 12-bit ROMM, then romm.pf (TLB.dll's "CRInputProfile") to sRGB.
+    No scene balance: the OEM runs Ansel in a positive mode that is not
+    modelled yet, and a slide is already the finished picture.
+
+    Two departures from the OEM, both for the shadows: the density is
+    computed in floating point (oem_rpd exact=True), and `flare` (per-channel
+    raw counts from measure_slide_flare) is subtracted first."""
+    x = rgb16.astype(np.float32)
+    if flare is not None:
+        x = x - np.asarray(flare, np.float32)
+    cmy = oem_rpd(x, posmat, lut, exact=True) / 4095.0
+    srgb = romm_lut.apply(link.apply(cmy))
+    return np.clip(srgb * 65535.0 + 0.5, 0.0, 65535.0).astype(np.uint16)
+
+
+PROFILES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
+                            "profiles")
+
+
+def slide_path(eeprom_dir=None, profiles=PROFILES_DIR):
+    """(PosMatrix, LUT, ColRevLink, romm.pf table) for render_slide. Without
+    an EEPROM archive the factory PosMatrix is used."""
+    return (load_pos_matrix(eeprom_dir), _c41_lut(),
+            ColRevLink(os.path.join(profiles, "ColRevLut1.pf")),
+            RpdLut(os.path.join(profiles, "romm.pf")))
 
 
 def to_grey(rgb16):
@@ -673,7 +837,7 @@ def _all_runs(mask, min_len=1):
     return runs
 
 
-def autocrop(rgb):
+def autocrop(rgb, positive=False):
     """Trim the dark leader, the blank (no-film) pre/post-load scan, and the
     residual low-detail margins, returning (cropped, (r0, r1, c0, c1)).
 
@@ -683,12 +847,16 @@ def autocrop(rgb):
     run of image rows. After that, further trim uniform (low-detail) rows from
     both ends — this removes blank film base (orange mask, no exposure) that is
     neither dark nor bright-neutral. Cols: trim residual low-detail margins.
+
+    positive=True (slide film): the gaps between frames are as dark as the
+    leader, so dark rows are not cut (that would keep a single frame); the
+    low-detail trim removes the leader instead.
     """
     full = float(rgb.max()) or 1.0
     sub = rgb[:, ::8, :].astype(np.float32)
     bright = sub.mean((1, 2))
     spread = sub.max(2).mean(1) - sub.min(2).mean(1)
-    dark = bright < 0.06 * full
+    dark = (bright < 0.06 * full) & (not positive)
     blank = (bright > 0.55 * full) & (spread < 0.03 * full)
     r0, r1 = _all_runs(~(dark | blank))[0]
 
@@ -713,6 +881,38 @@ def autocrop(rgb):
     cs = lum.std(0)
     c0, c1 = _all_runs(cs > 0.28 * cs.max())[0]
     return rgb[r0:r1 + 1, c0:c1 + 1], (r0, r1, c0, c1)
+
+
+def slide_frame_grid(ribbon, pitch_lo=2600, pitch_hi=3800):
+    """find_frame_grid for slide film: the gaps between slide frames are black
+    film (find_slide_gaps), which the detail-based comb misses (it locked onto
+    a wrong pitch on a strip of mostly dark frames). Pitch = median spacing of
+    consecutive gaps; a missing gap (spacing ~2x) is filled in; the frames
+    before the first and after the last gap are kept when there is room for
+    most of a frame. Returns (cut_rows, pitch) like find_frame_grid, or None
+    when fewer than two gaps are found (then use find_frame_grid)."""
+    rows = ribbon.shape[0]
+    gaps = [g for g in find_slide_gaps(ribbon) if g[0] > 0 and g[1] < rows - 1]
+    centres = [(a + b) // 2 for a, b in gaps]
+    diffs = np.diff(centres)
+    good = [d for d in diffs if pitch_lo <= d <= pitch_hi]
+    if len(centres) < 2 or not good:
+        return None
+    P = int(np.median(good))
+    cuts = [centres[0]]
+    for c in centres[1:]:
+        n = int(round((c - cuts[-1]) / P))
+        if n < 1:                       # a stray dark run inside a frame
+            continue
+        for j in range(1, n):           # missing gaps
+            cuts.append(cuts[-1] + (c - cuts[-1]) // (n - j + 1))
+        cuts.append(c)
+    # Leader / tail: keep a partial cell when it holds most of a frame.
+    while cuts[0] - P >= -0.45 * P and cuts[0] > 0.55 * P:
+        cuts.insert(0, max(0, cuts[0] - P))
+    while cuts[-1] + P <= rows + 0.45 * P and rows - cuts[-1] > 0.55 * P:
+        cuts.append(min(rows, cuts[-1] + P))
+    return [int(c) for c in cuts], P
 
 
 def find_frame_grid(ribbon, n_frames=None, pitch_lo=2600, pitch_hi=3800):
@@ -908,6 +1108,14 @@ def main():
                     help="silver B&W film: with --invert-c41, the same "
                          "inversion (NegMatrix with --eeprom-dir), then grey; "
                          "writes 16-bit grey TIFFs and grey JPEGs")
+    ap.add_argument("--slide", action="store_true",
+                    help="slide (colour reversal) film: no inversion; density "
+                         "LUT -> PosMatrix (the unit's with --eeprom-dir, else "
+                         "the factory 0.25) -> ColRevLut1.pf -> romm.pf -> sRGB")
+    ap.add_argument("--slide-flare", type=float, default=SLIDE_FLARE,
+                    help="with --slide: share of the stray light measured in "
+                         "the black between frames to remove, 0 = none, 1 = "
+                         f"all down to D 3.5 (default {SLIDE_FLARE:g})")
     ap.add_argument("--c41-matrix", default="none", choices=["none", "post", "pre"],
                     help="where to apply the ColNeg crosstalk matrix (default "
                          "none; the OEM matrix offsets over-subtract G/B in our "
@@ -955,11 +1163,13 @@ def main():
             sys.exit("--resample-to must be WxH, e.g. 3000x2000")
 
     rpd_path = os.path.abspath(args.rpd_profile)
+    if args.slide and (args.invert or args.invert_c41 or args.bw):
+        sys.exit("--slide is a positive: no --invert, --invert-c41 or --bw")
     if args.bw and not args.invert_c41:
         sys.exit("--bw requires --invert-c41")
-    if args.eeprom_dir and not args.invert_c41:
-        sys.exit("--eeprom-dir requires --invert-c41")
-    if args.jpeg or args.eeprom_dir:
+    if args.eeprom_dir and not (args.invert_c41 or args.slide):
+        sys.exit("--eeprom-dir requires --invert-c41 or --slide")
+    if (args.jpeg or args.eeprom_dir) and not args.slide:
         if not args.invert_c41:
             sys.exit("--jpeg requires --invert-c41 (it renders the inverted positive)")
         if not os.path.exists(rpd_path):
@@ -1066,7 +1276,7 @@ def main():
         rgb = rgb[:, :, perm]
 
     if args.autocrop:
-        rgb, (r0, r1, c0, c1) = autocrop(rgb)
+        rgb, (r0, r1, c0, c1) = autocrop(rgb, positive=args.slide)
         print(f"autocrop: rows {r0}-{r1}, cols {c0}-{c1} -> {rgb.shape[1]}x{rgb.shape[0]}")
     if args.crop_width:
         rgb = rgb[:, :args.crop_width]
@@ -1077,7 +1287,13 @@ def main():
     # so every frame inverts against the same white point, then apply per-frame.
     c41 = None
     oem = None
-    if args.invert_c41 and args.eeprom_dir:
+    slide = None
+    if args.slide:
+        slide = slide_path(args.eeprom_dir)
+        print("slide: PosMatrix " + (f"from {args.eeprom_dir}" if args.eeprom_dir
+                                     else "factory default (0.25)")
+              + ", ColRevLut1.pf, romm.pf")
+    elif args.invert_c41 and args.eeprom_dir:
         negmat, lut = load_neg_matrix(args.eeprom_dir), _c41_lut()
         step = max(1, rgb.shape[0] // 4000)
         bal = oem_roll_balance(np.asarray(rgb[::step, ::4]), negmat, lut,
@@ -1096,7 +1312,8 @@ def main():
     rot = (args.rotate // 90) % 4
 
     # Auto-detected frame grid (count never forced; see find_frame_grid).
-    cut_rows, pitch = find_frame_grid(rgb, args.frames)
+    grid = slide_frame_grid(rgb) if args.slide and not args.frames else None
+    cut_rows, pitch = grid or find_frame_grid(rgb, args.frames)
     fr = max(0, len(cut_rows) - 1)
     # Trust the detected boundaries; crop a FIXED width (3000 px, capped at the
     # pitch) centred between each pair of gaps so the leftover splits evenly as
@@ -1108,6 +1325,11 @@ def main():
         print("single frame")
     else:
         print(f"frame grid: pitch={pitch} rows, {fr} frames")
+    flare = None
+    if slide is not None:
+        flare = measure_slide_flare(rgb, args.slide_flare)
+        print(f"slide flare: R,G,B {[round(float(v), 1) for v in flare]} counts "
+              f"(strength {args.slide_flare:g})")
 
     for i in range(fr):
         if frame_w is None:
@@ -1118,7 +1340,9 @@ def main():
             r_end = min(rgb.shape[0], r_start + frame_w)
             r_start = max(0, r_end - frame_w)
         part = rgb[r_start:r_end]
-        if oem is not None:
+        if slide is not None:
+            part = render_slide(part, *slide, flare=flare)
+        elif oem is not None:
             part = render_oem(part, *oem, grey=args.bw)
         elif c41 is not None:
             part = invert_c41(part, c41[0], c41[1], matrix=args.c41_matrix,
@@ -1135,11 +1359,11 @@ def main():
         h_out = resize[1] if resize else part.shape[0]
         print(f"wrote {tif}  ({w_out}x{h_out}, 16-bit {'grey' if part.ndim == 2 else 'RGB'}"
               f"{' resampled' if resize else ''}"
-              f"{' C-41 positive' if (c41 or oem) is not None else (' inverted' if args.invert else ' raw/negative')})")
+              f"{' slide' if slide is not None else ' C-41 positive' if (c41 or oem) is not None else (' inverted' if args.invert else ' raw/negative')})")
         if args.jpeg:
             from PIL import Image
-            # The OEM-path TIFF is already rendered through rpd.pf.
-            if oem is not None or part.ndim == 2:
+            # The OEM-path and slide TIFFs are already rendered.
+            if oem is not None or slide is not None or part.ndim == 2:
                 rendered = (part >> 8).astype(np.uint8)
             else:
                 rendered = render_jpeg(part, rpd_path, gamma=args.jpeg_gamma)
@@ -1149,7 +1373,8 @@ def main():
             jpg = f"{args.out}{suffix}.jpg"
             im.save(jpg, quality=args.jpeg_quality)
             print(f"wrote {jpg}  ({im.width}x{im.height}, rendered JPEG: "
-                  + ("OEM colour path)" if oem is not None else
+                  + ("slide path)" if slide is not None else
+                     "OEM colour path)" if oem is not None else
                      "RPD profile + scene-balance + highlight roll-off)"))
 
 

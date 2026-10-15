@@ -53,6 +53,51 @@ light calibration raises scan duty by `10^D` of a nominal base density
 (colour negative R 0.144, G 0.40, B 0.715), so the base is largely neutralised
 optically before the data reaches the LUT [I].
 
+**Slide** (TLB.dll film type 2, 2026-10-14) [C]: the same density LUT (the
+engine builds a second copy for positives, `FUN_1000dfc0(2)`, with the same
+formula), then the PosMatrix (engine object +0xC8; 0.25·I on every unit seen,
+so 875 codes per density decade, no inversion), then
+`PakonIMAu!PIColorCorrectColRevPlanar(planes, w, h, 0, 0)`. That applies
+`ColRevLut1.pf`, a Kodak device link "Pakon CMY to ROMM12" (lut16: 511-entry
+input curves, 31³ grid, identity output curves), in place, giving 12-bit ROMM
+RGB; `romm.pf` (TLB.dll's `CRInputProfile`) is then the input profile instead
+of `rpd.pf`. `PIBegin` also loads `ColRevLutS6.lut` (4096 × 12-bit), but
+nothing reads it afterwards. Ansel scene balance is called for positives too,
+in another mode (4 instead of 1); we leave it out.
+`render_slide` in `tools/pakon_image.py` evaluates the lut16 straight from the
+tag (curves + trilinear grid) and then `romm.pf` → sRGB the way `RpdLut` does
+`rpd.pf`. On a neutral density ramp it stays neutral: D 0 → white, D 1 → sRGB
+102, D 3 → 9.
+
+Two departures from the OEM, both for the shadows, where slides are the
+scanner's weak point (on serial 3054 the noise floor is ~20–27 counts, so the
+usable range is about D 3.3, while slides reach D 3.5–4):
+- **Exact density** (`oem_rpd(..., exact=True)`): `3500·log10(16383/x)` in
+  floating point instead of the 14-bit table; at D 3 one 14-bit step is
+  ~0.026 D, which bands lifted shadows. Negatives keep the table.
+- **More light at scan**: pakon_replay gives slides a film-base density of
+  0.12 on R, G and B (the OEM uses 0), so the calibration duty is capped at
+  1/1.32 of the period, the current search goes one step higher, and the scan
+  runs ~1.32× the open-gate light. Slide film never transmits more than about
+  D 0.15, so nothing on the film clips. `RAW.flat.json` records the
+  `scan_duties`, and `load_flat_field` scales the gain by calibration duty /
+  scan duty for slide scans, so the film comes out at its true transmission.
+- **Stray light** (`measure_slide_flare`): the black film between frames
+  should read about D 3.5 (~20 counts) but reads D 2.6–3 (R 172, G 86, B 71
+  counts on the first slide roll), lifted by scattered light, red-heavy. Per
+  roll, the gap rows (`find_slide_gaps`: rows whose brightest pixels stay
+  within 3× the darkest rows' level, runs of 80+ rows) are measured, capped at
+  D 2, and `--slide-flare` (default 0.5) × (that − the D 3.5 level) is
+  subtracted from the raw before the density step.
+- **Frame grid** (`slide_frame_grid`): the detail-based comb of
+  `find_frame_grid` locked onto a wrong pitch (2732) on a strip of mostly
+  dark frames, and the stray light measured at its "gaps" (picture) came out
+  35× too high. Slides now place frames from the black gaps themselves:
+  pitch = median gap spacing (~3180 rows at Base 16 on serial 3054), missing
+  gaps filled in, partial end frames kept when they hold most of a frame;
+  it falls back to `find_frame_grid` with fewer than two gaps. 0.5–0.75 looked right on
+  that roll (deeper, neutral shadows, detail kept); 1.0 crushed the shade.
+
 **Silver B&W** (TLB.dll film type 4) goes through the same LUT and NegMatrix
 (FUN_1000d880 treats types 1, 4 and 8 alike; 2 = positive). We then average
 the three RPD channels, render the neutral through `rpd.pf` and keep the

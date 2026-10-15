@@ -12,11 +12,11 @@ Endpoints
 ---------
 GET  /api/status                  scanner state + current job info
 POST /api/firmware                SSE — load firmware (cold device)
-POST /api/scan                    SSE — run a scan (a new order in the work folder; film c41|bw)
+POST /api/scan                    SSE — run a scan (a new order in the work folder; film c41|bw|slide)
 POST /api/workdir                 set the work folder scans go into
 POST /api/eject                   SSE — run the film out of the transport
 POST /api/open                    pick a .raw on the host (keeps its crops)
-POST /api/process                 SSE — decode the opened .raw or the last scan (film c41|bw)
+POST /api/process                 SSE — decode the opened .raw or the last scan (film c41|bw|slide)
 GET  /api/frames                  list decoded frames
 GET  /api/frames/{n}/thumb        JPEG thumbnail
 GET  /api/frames/{n}/tiff         16-bit TIFF download
@@ -620,7 +620,7 @@ def _run_job(work, on_done, name: str, page: str, stats=None):
 @app.post("/api/process")
 async def api_process(film: str | None = Body(None, embed=True)):
     """Prescan: cache the ribbon, render the preview strip, detect frame centres.
-    `film` (c41 | bw) defaults to the one recorded for the raw."""
+    `film` (c41 | bw | slide) defaults to the one recorded for the raw."""
     if _state["processing"]:
         async def _busy():
             yield _sse({"type": "error", "message": "Already processing"})
@@ -768,7 +768,8 @@ async def api_export_frames(
                              frame_w=meta["frame_w"], progress=prog,
                              rpd_balance=meta.get("rpd_balance"),
                              roll_centres=meta.get("centres"),
-                             film=meta.get("film", "c41"))
+                             film=meta.get("film", "c41"),
+                             flare=meta.get("flare"))
 
     def _done(result):
         _state["frames"] = result

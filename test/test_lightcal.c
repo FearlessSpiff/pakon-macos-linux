@@ -207,12 +207,23 @@ int main(void)
 
     /* Film types: colour negative is the default; silver B&W uses the OEM's
      * "other" densities, so the calibration caps sit at (nearly) the full
-     * period and the scan duties stay near the open-gate ones. */
+     * period and the scan duties stay near the open-gate ones. Slide caps
+     * calibration at 1/10^0.12 of the period and scans 1.32x brighter. */
     CHECK(pakon_lc_film_density(PAKON_FILM_C41) == pakon_lc_density_c41 &&
-          pakon_lc_film_density(PAKON_FILM_BW) == pakon_lc_density_bw,
+          pakon_lc_film_density(PAKON_FILM_BW) == pakon_lc_density_other &&
+          pakon_lc_film_density(PAKON_FILM_SLIDE) == pakon_lc_density_slide,
           "film density tables");
     CHECK(!strcmp(pakon_film_name(PAKON_FILM_C41), "c41") &&
-          !strcmp(pakon_film_name(PAKON_FILM_BW), "bw"), "film names");
+          !strcmp(pakon_film_name(PAKON_FILM_BW), "bw") &&
+          !strcmp(pakon_film_name(PAKON_FILM_SLIDE), "slide"), "film names");
+    {
+        pakon_film f = PAKON_FILM_C41;
+        CHECK(pakon_film_parse("slide", &f) == 0 && f == PAKON_FILM_SLIDE &&
+              pakon_film_parse("bw", &f) == 0 && f == PAKON_FILM_BW &&
+              pakon_film_parse("c41", &f) == 0 && f == PAKON_FILM_C41 &&
+              pakon_film_parse("e6", &f) != 0 && f == PAKON_FILM_C41,
+              "film names parse");
+    }
     {
         const uint16_t bw_cap[4] = { 1856, 1732, 1856, 1544 };
         const uint16_t bw_scan[4] = { 896, 759, 278, 1627 };
@@ -220,9 +231,24 @@ int main(void)
         for (int c = 0; c < 4; c++) {
             snprintf(msg, sizeof msg, "B&W channel %d: cap %u, scan duty %u", c,
                      bw_cap[c], bw_scan[c]);
-            CHECK(pakon_lc_duty_cap(period, pakon_lc_density_bw[c]) == bw_cap[c] &&
-                  pakon_lc_scan_duty(open[c], pakon_lc_density_bw[c], period) ==
+            CHECK(pakon_lc_duty_cap(period, pakon_lc_density_other[c]) == bw_cap[c] &&
+                  pakon_lc_scan_duty(open[c], pakon_lc_density_other[c], period) ==
                   bw_scan[c], msg);
+        }
+    }
+
+    {
+        /* Open-gate duties from a slide calibration: the caps force a higher
+         * current, and every scan duty stays inside the period. */
+        const uint16_t cap[4] = { 1408, 1408, 1408, 1544 };
+        const uint16_t open[4] = { 1400, 1100, 900, 1372 };
+        const uint16_t scan[4] = { 1846, 1450, 1186, 1650 };
+        for (int c = 0; c < 4; c++) {
+            snprintf(msg, sizeof msg, "slide channel %d: cap %u, scan duty %u", c,
+                     cap[c], scan[c]);
+            CHECK(pakon_lc_duty_cap(period, pakon_lc_density_slide[c]) == cap[c] &&
+                  pakon_lc_scan_duty(open[c], pakon_lc_density_slide[c], period) ==
+                  scan[c] && scan[c] <= period - 2, msg);
         }
     }
 

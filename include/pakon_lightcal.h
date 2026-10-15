@@ -102,12 +102,19 @@ unsigned pakon_lc_smear(double black_bright, double black_dark,
 extern const double pakon_lc_density_c41[PAKON_LC_NCH];
 
 /* Film types the scan supports, and their film-base densities (R, G, B, IR)
- * from the same table: colour negative above; silver B&W shares the OEM's
- * "other" row (slide and silver B&W) 0 / 0.03 / 0 / 0.08. */
-typedef enum { PAKON_FILM_C41 = 0, PAKON_FILM_BW } pakon_film;
-extern const double pakon_lc_density_bw[PAKON_LC_NCH];
+ * from the same table: colour negative above; silver B&W uses the OEM's
+ * "other" row 0 / 0.03 / 0 / 0.08 (TLB.dll film types 4 and 2). Slide departs
+ * from the OEM (which uses "other"): 0.12 on R, G and B, so the scan gets
+ * ~1.32x the open-gate light. Slide film never transmits more than ~D 0.15,
+ * so nothing on the film clips, and the shadows gain a third of a stop over
+ * the noise floor. The decoder divides it back out (the scan duties go in
+ * RAW.flat.json). */
+typedef enum { PAKON_FILM_C41 = 0, PAKON_FILM_BW, PAKON_FILM_SLIDE } pakon_film;
+extern const double pakon_lc_density_other[PAKON_LC_NCH];
+extern const double pakon_lc_density_slide[PAKON_LC_NCH];
 const double *pakon_lc_film_density(pakon_film film);
-const char *pakon_film_name(pakon_film film);   /* "c41" / "bw" */
+const char *pakon_film_name(pakon_film film);   /* "c41" / "bw" / "slide" */
+int pakon_film_parse(const char *name, pakon_film *film);   /* 0 if known */
 
 /* Next A/D offset from a black-pixel mean: off + round((mean - 300) * -0.0133929)
  * (TLB.dll). When that rounds to no change while the mean is still outside
