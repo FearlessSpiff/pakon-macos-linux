@@ -32,17 +32,6 @@ interoperability (see `docs/PROTOCOL.md` → PROVENANCE).
 > flow** — prescan preview → operator confirms each crop in the browser →
 > high-res export.
 
-## Related projects
-
-- [pakon-reference](https://github.com/alibosworth/pakon-reference): public,
-  implementation-agnostic reference for the F-X35 family (EEPROM layout, DX,
-  safety rules). Several of its hardware facts were measured with this project.
-- libpakon (Stefan Dierauf): an independent C++ driver, used as a read-only
-  reference (`docs/LIBPAKON_COMPARISON.md`).
-- The original OEM Windows software, whose F-135 engine `TLB.dll` was
-  reverse-engineered for interoperability (`docs/TLB_FINDINGS.md`). Not
-  redistributed here.
-
 ## Architecture
 
 The hardware driver is two strictly separated C layers:
@@ -63,7 +52,9 @@ by both layers without coupling them to each other. Built on them:
   event follow-ups), checked byte for byte against the captures.
 - **`pakon_lightcal`**: line statistics and the light-calibration steps.
 - **`pakon_eeprom`**: per-unit EEPROM decoder. **`pakon_fw`**: FX2
-  firmware-load sequence from Intel HEX.
+  firmware-load sequence from Intel HEX (parsed by **`pakon_hex`**).
+- **`pakon_dx`**: decodes the DX sensor block (the film's edge barcode, read
+  by the scanner itself) into the film's product code and frame numbers.
 
 On top of the driver, the Python web service (`web/`) drives the C tools and
 runs the image pipeline (`tools/pakon_image.py`) to serve the browser UI.
@@ -92,8 +83,10 @@ ctest --test-dir build --output-on-failure
 
 Produces: static `libpakon`, tools `pakon_probe` and `pakon_replay`, and the
 hardware-free unit tests (`test_proto`, `test_hex`, `test_calib`,
-`test_eeprom_c`, `test_setup`, `test_lightcal`, `test_fw`). When CMake finds
-Python 3, ctest also runs the offline EEPROM tests (`test_eeprom`).
+`test_eeprom_c`, `test_setup`, `test_lightcal`, `test_fw`, `test_dx`). When
+CMake finds Python 3, ctest also runs the offline Python tests
+(`test_eeprom`, `test_image_colour`, `test_dx_metadata`, `test_oem_sba`); the
+last three skip themselves when their Python libraries are missing.
 
 ## Usage
 
@@ -162,7 +155,9 @@ stops the motor. Base 16 with the IR channel; about 240 MB per 4-frame strip,
 up to ~2 GB for a 36-exposure roll (`--max-mb`, default 4096, is only a
 runaway guard). The calibration's per-column tables are saved next to the
 raw as `scan.raw.flat.json`; the decoder picks them up (see
-[Flat field](#flat-field)).
+[Flat field](#flat-field)). When the scanner reads the film's DX edge code,
+the film's product code is saved as `scan.raw.dx.json` (see
+[Film identity (DX)](#film-identity-dx)).
 
 **5. Eject the strip**
 
@@ -205,7 +200,8 @@ open `http://localhost:8000`. Open the `.raw` (a scan is already loaded), click 
 long preview strip + detected frames), **confirm/position each crop** on the
 strip, then **Export** for high-res output, and save it from the Export page
 into the work folder: `jpeg/`, `tiff/` (plain positive) and `raw/` (raw
-negative TIFF) subfolders, plus a contact sheet.
+negative TIFF) subfolders, plus a contact sheet. When the scan read the
+film's DX code, each file carries the film name and ISO.
 
 **Option B — command line:** requires Python 3, `numpy`, `pillow` (with
 littlecms, for `--jpeg`), and ImageMagick (`magick`).
@@ -233,7 +229,8 @@ as 37+ usable frames). The decoder automatically handles:
 - **Flat field** — the per-column dark and gain correction from the light
   calibration (see [Flat field](#flat-field)).
 - **IR (Digital ICE) block** — the trailing IR samples of each row are dropped
-  (we do **not** do scratch removal — see `docs/IMAGING.md`).
+  (no dust and scratch removal yet: a prototype is in
+  [#37](https://github.com/jorshhh/pakon-macos/pull/37), see `docs/IMAGING.md`).
 - **Marker-bit row alignment** (fixes the R,G,B phase per scan) and **trilinear
   registration** of the R/G/B sensor lines.
 - **Frame detection** — autocorrelation pitch → count → phase-locked comb →
@@ -320,6 +317,22 @@ the scan script and auto-detects each raw's row layout, so the two-stage flow
 works on both. Everything else F-135+ (protocol differences, stream format,
 per-mode parameters) is in `docs/F135_PLUS_CAPTURES.md`.
 
+### Film identity (DX)
+
+35 mm film carries a DX barcode along its edge with the film's product code
+and frame numbers. The scanner decodes it itself; the event service reads the
+result (PICL register `0x90`, `docs/PROTOCOL.md`), logs it as `dx:` lines at
+`PAKON_DEBUG=2`, and a scan ends with a summary such as
+`dx: film 82/3, 5 codes (0 rejected), frames 6..4`.
+
+`--scan-code` saves the product code as `scan.raw.dx.json`. The web app looks
+it up in the OEM product-code table (`oem/ansel/common/`), shows the film next
+to the raw in Process, and writes it into every exported JPEG and TIFF: the
+film name as the description, caption and keyword (EXIF and XMP, embedded in
+the file) and the ISO. The table was last revised in 2006, so newer films
+often have no entry; then nothing is written. Frame numbers are decoded but
+not used yet.
+
 ### Debug logging
 
 Set `PAKON_DEBUG=0..4` to control verbosity. Level 4 hexdumps every packet.
@@ -364,9 +377,10 @@ python3 -m pip install -r web/requirements.txt
 python3 -m uvicorn web.app:app --host 0.0.0.0 --port 8000
 ```
 
-Open `http://<host>:8000`. The UI shows scanner connection state, loads firmware,
-triggers a scan with a live progress bar, then runs the **two-stage minilab
-flow**:
+Open `http://<host>:8000`. The UI opens on **Home** (start a scan or open a
+raw) and has a space for each step: **Scan** (connection state, firmware,
+work folder and film type, scan with a live progress bar, eject), then the
+**two-stage minilab flow**:
 
 1. **Process (prescan)** — builds the long negative ribbon once, caches it, and
    renders a single long **preview strip** with auto-detected frame positions.
@@ -376,8 +390,14 @@ flow**:
    through the C-41 inversion + `rpd.pf` render. Colour and density are balanced
    per frame by the OEM's own scene balance (Kodak SBA + roll analysis), run from
    `oem/PakonIMAu.dll` under emulation (`tools/oem_sba.py`; needs `unicorn` and
-   `pefile` from `web/requirements.txt`). Download per-frame raw negative / TIFF /
-   JPEG, a zip of any format, or a JPEG contact sheet.
+   `pefile` from `web/requirements.txt`). Download a single frame (raw
+   negative, TIFF or JPEG), or save every frame of a format, or a contact
+   sheet, into the order's folder in the work folder. The film name and ISO
+   go into each file when the scan read the DX code.
+
+**Settings** holds the crash-report and usage-statistics switches (see
+[Privacy](#privacy)). On macOS the same service also runs as a standalone
+app, `Pakon.app` (`packaging/macos/README.md`).
 
 Processing applies the [flat field](#flat-field) automatically when one is
 found (the scan's own, else the EEPROM archive's `flatfield.json`);
@@ -423,8 +443,8 @@ Open work is tracked in [GitHub issues](https://github.com/jorshhh/pakon-macos/i
 - **F-135+ built in code:** scan (#14), light calibration and flat field
   (#15), film advance and eject (#16).
 - **Scan options:** resolution Base 4 / 8 / 16 (#17); B&W and slide film (#18).
-- **Image:** Digital ICE dust and scratch removal (#26); the remaining OEM
-  scene-balance stages (#22); DX barcode frame numbers (#24).
+- **Image:** Digital ICE dust and scratch removal (#26, prototype in #37); the
+  remaining OEM scene-balance stages (#22).
 - **Distribution:** installable release builds for macOS, Windows and Linux
   (#25).
 
@@ -435,6 +455,50 @@ OEM Intel HEX files (`pakon_probe --load-firmware-hex firmware/PknLdr.hex
 firmware/Pakon7.hex`) is verified on the F-135; the stage-1 loader comes from
 the OEM `F235Ldr.sys` via `tools/extract_fx2_loader.py`. The captured `.pakfw`
 replay remains as a fallback.
+
+## Credits
+
+pakon stands on other people's work:
+
+- **Ali Bosworth**:
+  [pakon-reference](https://github.com/alibosworth/pakon-reference) (CC BY
+  4.0), the public, implementation-agnostic reference for the F-X35 family.
+  The DX barcode support is built on its account of the sensor block, the
+  barcode layout and the OEM product-code table; its EEPROM layout and safety
+  rules are used throughout. Ali also brought up and verified the F-135+ on
+  serial 16402: its captures are the source of `resources/f135plus/` and of
+  `docs/F135_PLUS_CAPTURES.md`. Several of the reference's hardware facts
+  were measured with this project.
+- **Mats Fagerberg** ([thetalkingdrum](https://github.com/thetalkingdrum)):
+  the base F-135 EEPROM dump (serial 2233) used as a test fixture, via
+  pakon-reference, and pointing us to nkscan for Digital ICE.
+- **Digital ICE** ([#37](https://github.com/jorshhh/pakon-macos/pull/37), in
+  progress): a numpy port of the dust removal in
+  [nkscan](https://github.com/activexray/nkscan) (`src/dust.rs`, MIT OR
+  Apache-2.0, © the nkscan authors), which implements the pipeline documented
+  by [openICE](https://github.com/a6o/openICE) (a6o, GPL-3.0).
+- **Kai Kaufman** ([ktkaufman03/FX35](https://github.com/ktkaufman03/FX35)):
+  the open-source FX35 Windows driver. Its package carries the OEM firmware
+  as Intel HEX (`firmware/README.md`), and with logging added it recorded the
+  F-135+ captures (`tools/fx35_datalogger.py`).
+- **Stefan Dierauf**: libpakon, an independent C++ driver, used as a
+  read-only reference (`docs/LIBPAKON_COMPARISON.md`).
+- **Kodak / Pakon**: the original F-X35 software. Its F-135 engine `TLB.dll`
+  was reverse-engineered for interoperability (`docs/TLB_FINDINGS.md`); the
+  colour engine `PakonIMAu.dll`, its scene-balance data and the DX
+  product-code table are used as-is (`oem/`), as are the colour profiles in
+  `profiles/` (© Eastman Kodak Company).
+- **Software**: [libusb](https://libusb.info),
+  [FastAPI](https://fastapi.tiangolo.com),
+  [uvicorn](https://www.uvicorn.org), [NumPy](https://numpy.org),
+  [Pillow](https://python-pillow.org) (with littleCMS),
+  [tifffile](https://github.com/cgohlke/tifffile),
+  [PyUSB](https://github.com/pyusb/pyusb),
+  [Unicorn](https://www.unicorn-engine.org) and
+  [pefile](https://github.com/erocarrera/pefile) (to run the OEM scene
+  balance), [pywebview](https://pywebview.flowrl.com) (the Mac app),
+  [Ghidra](https://ghidra-sre.org) (reverse engineering) and
+  [Rybbit](https://rybbit.com) (opt-in analytics).
 
 ## License
 
