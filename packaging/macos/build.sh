@@ -73,14 +73,23 @@ rm -rf "$APP" "$OUT/Pakon.dmg"
 
 # --- libusb, built for $DEPLOY (Homebrew's targets the running macOS) -------
 step "libusb"
-USB_PREFIX="$CACHE/libusb-$DEPLOY"
+USB_PREFIX="$CACHE/libusb-$DEPLOY-nopipe2"
 if [ ! -f "$USB_PREFIX/lib/libusb-1.0.0.dylib" ]; then
     fetch "$USB_URL" "$USB_SHA" "$CACHE/libusb.tar.bz2"
     rm -rf "$CACHE/libusb-src" && mkdir -p "$CACHE/libusb-src"
     tar -xjf "$CACHE/libusb.tar.bz2" -C "$CACHE/libusb-src" --strip-components 1
+    # pipe2 is macOS 27+. Against a newer SDK configure finds it, libusb_init
+    # calls it unguarded, and older macOS jumps to the null weak import.
     (cd "$CACHE/libusb-src" \
         && ./configure --prefix="$USB_PREFIX" --disable-static --quiet \
+            ac_cv_func_pipe2=no \
         && make -s -j"$(sysctl -n hw.ncpu)" && make -s install)
+fi
+# minos alone misses this: a weak import still passes the check below
+if dyld_info -imports "$USB_PREFIX/lib/libusb-1.0.0.dylib" | grep -q 'weak-import'; then
+    echo "libusb weak-imports symbols newer than $DEPLOY:"
+    dyld_info -imports "$USB_PREFIX/lib/libusb-1.0.0.dylib" | grep 'weak-import'
+    exit 1
 fi
 
 # --- C tools, linked against that libusb by rpath --------------------------
