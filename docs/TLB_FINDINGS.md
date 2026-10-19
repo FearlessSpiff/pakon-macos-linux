@@ -37,7 +37,16 @@ Reply status 3/6/9 and flags 0x01/0x10 -> retry; 1/2/4/5/7 hard error; 0/8 OK.
 ### Prepare (FN_bBeforeScan 1002dbd0)
 1. wake interrupt thread (clear pending events)
 2. ResetFifos: `02 04 10 01 84 02`, `04 03 LOW 00 8a` X  (0x8a = ResetFifos, not AcquireLine)
-3. recalibrate only if no record / older than DarkPointCorrectIntervalMinutes / forced
+3. recalibrate only if no record / older than DarkPointCorrectIntervalMinutes / forced.
+   One record per (film format 0x36c/0x370, film type 0x374 with 2 -> 1, IR flag
+   0x378) (FUN_1000f330, FUN_100109f0). Record +0x24 = time() of the last
+   calibration, +0x30 = of the last full one (FindCorrections 10021590 stamps
+   +0x24 always, +0x30 only when full). Interval = settings +0x38, default 0x3c =
+   60 min (constructor FUN_10011fd0); PSI.exe reads it with GetProfileInt.
+   Recalibrate when `interval*60 < now - rec+0x24`; scan flag 0x10000 adds 900 s
+   to `now` (meaning unknown). Full (LED current search) when `now - rec+0x30 >
+   72000` s = 20 h (FUN_10010250), else from the saved currents. Ours:
+   `pakon_calcache.h`, `--scan-code` (`--recalibrate` forces full).
 4. FN_bDrvPutCcdFpgaSettings: bank82 reg0 bit 0x100 = IR mode X (0x160/0x161); reg6 = integration period X (0x0c1a); reg4 = EEPROM Offset; reg5 = Offset+height
 5. AtoD offsets bank84 regs5-7 sign-mag (bit 0x100 neg, ±255); gains bank84 regs2-4 (<= 63)
 6. LampOn

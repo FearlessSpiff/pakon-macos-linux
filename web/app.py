@@ -274,7 +274,7 @@ async def _detect_model() -> str | None:
 
 # Lines of `pakon_replay --scan-code` worth showing, and the one that means
 # "the motor runs, feed the film".
-_SCAN_LOG_KEYS = ("calibrated:", "film detected", "end-of-roll", "stream ended",
+_SCAN_LOG_KEYS = ("calibration:", "calibrated:", "film detected", "end-of-roll", "stream ended",
                   "no film fed", "safety cap", "event service:", "scan-code:",
                   "teardown", "failed", "did not converge", "insufficient", "] dx:")
 _FEED_KEY = "feed the film now"
@@ -421,7 +421,8 @@ def _prepare_out() -> tuple[Path | None, str | None]:
 
 async def _scan_code_stream(eeprom_dir: Path, film: str):
     """F-135 scan with nothing replayed: setup, light calibration (open gate,
-    keep the film out), motor start, then the operator feeds the film."""
+    keep the film out; reused for an hour like the OEM software, see
+    include/pakon_calcache.h), motor start, then the operator feeds the film."""
     out_path, err = _prepare_out()
     if err:
         yield _sse({"type": "error", "message": err})
@@ -430,8 +431,8 @@ async def _scan_code_stream(eeprom_dir: Path, film: str):
                 "order": out_path.parent.name})
     yield _sse({"type": "log",
                 "message": f"Model: F-135 — scan built in code (EEPROM "
-                           f"{eeprom_dir.name}). Calibrating: keep the film out "
-                           f"until the motor starts."})
+                           f"{eeprom_dir.name}). Keep the film out until the "
+                           f"motor starts."})
     code = 1
     async for ev in _run_streaming(
             ["--scan-code", "--eeprom-dir", str(eeprom_dir), "--image", str(out_path),

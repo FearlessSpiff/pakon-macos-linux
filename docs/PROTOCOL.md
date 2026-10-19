@@ -208,7 +208,9 @@ What our unit adds to the reference:
 1. Clear pending events (run the event service once).
 2. ResetFifos: `02 04 10 01 84 02`, `04 03 LOW 00 8a`.
 3. Calibrate if there is no calibration, it is older than the configured
-   interval, or it is forced (motor stopped; `docs/TLB_FINDINGS.md`).
+   interval (default 60 min), or it is forced; from scratch (LED current
+   search) if the last full calibration is over 20 h old, else from the saved
+   currents (motor stopped; `docs/TLB_FINDINGS.md`, `include/pakon_calcache.h`).
 4. FPGA settings: bank `0x82` reg 0 (control, IR bit), reg 4/5 (pixel window
    from the EEPROM Offset), reg 6 (integration period); bank `0x84` gains and
    offsets.

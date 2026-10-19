@@ -94,6 +94,21 @@ pakon_result pakon_setup_configure(pakon_seq *seq, pakon_setup_state *state,
  */
 pakon_result pakon_setup_teardown(pakon_seq *seq, const pakon_setup_state *state);
 
+/* Front-panel status-LED word (bank 0x82 reg 9; bit layout in
+ * docs/REGISTERS.md). 0x0017 = middle LED green, right LED off: the word
+ * init leaves and the OEM restores after calibration. Calibrating = right
+ * LED blinking orange/off, as TLX shows before the first scan (0x00D4,
+ * checked on serial 3054, 2026-10-19). resources/scan.pakscan's calibration
+ * writes 0x0313 instead, the same blink on the middle LED. The right LED is
+ * off again (idle) once the scan is done. */
+#define PAKON_PANEL_IDLE         0x0017u
+#define PAKON_PANEL_CALIBRATING  0x00D4u
+/* Motor running, feed the film: right LED solid green, as TLX shows (the
+ * captured scan writes 0x0215, which also blinks the middle LED). */
+#define PAKON_PANEL_FEED         0x0015u
+pakon_result pakon_setup_panel(pakon_seq *seq, const pakon_setup_state *state,
+                               uint16_t word);
+
 /* ---- Calibration writes (TLB.dll FN_bCalibrateLEDs; docs/REGISTERS.md) ---- */
 
 /* Bank 0x82 reg 0 = configured value | 1 (acquire on) or the value alone. */

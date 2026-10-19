@@ -12,7 +12,9 @@ void pakon_seq_init(pakon_seq *seq)
 {
     seq->n = 0;
     seq->overflow = 0;
-    seq->delay_ms[0] = 0;
+    /* All of them: frames added without push() (probe_rearm) would otherwise
+     * wait for whatever was on the stack, which cost ~28 s a calibration pass. */
+    memset(seq->delay_ms, 0, sizeof seq->delay_ms);
 }
 
 static void push(pakon_seq *seq, uint8_t type, const uint8_t *data, size_t n)
@@ -213,6 +215,15 @@ pakon_result pakon_setup_teardown(pakon_seq *seq, const pakon_setup_state *state
     delay_next(seq, 20);
     command(seq, scn, 0xA2);                     /* release the drive */
 
+    return seq->overflow ? PAKON_ERR_PARAM : PAKON_OK;
+}
+
+pakon_result pakon_setup_panel(pakon_seq *seq, const pakon_setup_state *state,
+                               uint16_t word)
+{
+    if (!seq || !state)
+        return PAKON_ERR_PARAM;
+    write_fpga(seq, state->scn, BANK_CCD, 0x9, word);
     return seq->overflow ? PAKON_ERR_PARAM : PAKON_OK;
 }
 

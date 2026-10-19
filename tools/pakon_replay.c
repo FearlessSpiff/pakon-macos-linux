@@ -17,6 +17,7 @@
 #include "pakon_eeprom.h"
 #include "pakon_setup.h"
 #include "pakon_lightcal.h"
+#include "pakon_calcache.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -498,7 +499,16 @@ static int hexbytes(const char *s, uint8_t *out, size_t max)
                                    * 60 not 90: each line is [visible|IR] and the
                                    * ~25% IR band sits at ~32k (< threshold), so an
                                    * open-gate chunk is only ~75% "white" -- 90%
-                                   * could never trip and the scan ran to the cap */
+                                   * could never trip and the scan ran to the cap.
+                                   * For the replayed OEM scans (--scan, --scan-sm). */
+#define SM_WHITE_FRAC_CODE_PCT 84u /* --scan-code: its own calibration brings the
+                                   * open gate to full scale (R/G/B clipped, IR at
+                                   * 40000), so an open-gate chunk is 87.9-94.4%
+                                   * white (it varies with how much IR block the
+                                   * chunk catches), while the C-41 scan duties
+                                   * lift film base to at most 79.6% (serial 3054,
+                                   * 2026-10-19). 60 counted film base as open gate
+                                   * and ended the scan on the strip. */
 #define SM_TRAIL_WHITE    24u     /* consecutive white chunks after film => done
                                    * (generous so a blown-highlight patch within a
                                    * frame doesn't false-stop) */
@@ -518,10 +528,11 @@ static int hexbytes(const char *s, uint8_t *out, size_t max)
                                    * and real film (>=20%%). */
 
 /* Is a 0x86 chunk dominated by open-gate white (no film in the gate)? Counts
- * 16-bit samples above SM_WHITE_THRESH; an open-gate chunk is ~75% white (the IR
- * band is the rest), film chunks ~0% (content is well below threshold). Used by
- * both the driven loop's end-of-roll and verbatim --autostop. */
-static int sm_chunk_is_white(const uint8_t *buf, size_t got)
+ * 16-bit samples above SM_WHITE_THRESH and compares with `frac_pct`
+ * (SM_WHITE_FRAC_PCT for the replayed scans, SM_WHITE_FRAC_CODE_PCT for
+ * --scan-code). Used by both the driven loop's end-of-roll and verbatim
+ * --autostop. */
+static int sm_chunk_is_white(const uint8_t *buf, size_t got, unsigned frac_pct)
 {
     size_t samples = got / 2;
     if (samples == 0) return 0;
@@ -530,7 +541,7 @@ static int sm_chunk_is_white(const uint8_t *buf, size_t got)
         unsigned v = (unsigned)buf[i] | ((unsigned)buf[i + 1] << 8);
         if (v > SM_WHITE_THRESH) white++;
     }
-    return white * 100u >= samples * SM_WHITE_FRAC_PCT;
+    return white * 100u >= samples * frac_pct;
 }
 
 /* Does a 0x86 chunk carry real film-band content (vs the dim pre-film leader)?
@@ -712,7 +723,7 @@ static int do_scan(const char *script, const char *image_path, unsigned timeout,
             if (++nimg % 1000 == 0)
                 printf("  ... %lu image reads, %llu bytes\n", nimg, img_bytes);
             if (autostop && scan_armed && got) {
-                if (sm_chunk_is_white(buf, got)) {
+                if (sm_chunk_is_white(buf, got, SM_WHITE_FRAC_PCT)) {
                     if (film_seen && ++trail_white >= SM_TRAIL_WHITE) {
                         printf("  [autostop] end-of-roll white (%u chunks) after "
                                "%lu reads / %llu bytes -> stopping early\n",
@@ -843,8 +854,8 @@ static pakon_result sm_cmd(pakon_dev *dev, const uint8_t *raw, size_t n,
  * event pending we count an idle window. Primary stop is end-of-roll white. */
 static void sm_scan_loop(pakon_dev *dev, FILE *img, unsigned long long *img_bytes,
                          unsigned long *nimg, unsigned long *ncmd, unsigned long *errs,
-                         unsigned timeout, unsigned long max_mb, int *film_seen_out,
-                         pakon_dx_roll *dx)
+                         unsigned timeout, unsigned long max_mb, unsigned white_pct,
+                         int *film_seen_out, pakon_dx_roll *dx)
 {
     unsigned events = 0, overflows = 0;
     char dx_line[256];
@@ -878,7 +889,7 @@ static void sm_scan_loop(pakon_dev *dev, FILE *img, unsigned long long *img_byte
             if (hf & PAKON_HOST_FLAG_OVERFLOW)
                 overflows++;
             (*ncmd)++;
-            if (sm_chunk_is_white(buf, got)) {     /* open-gate bright = no film */
+            if (sm_chunk_is_white(buf, got, white_pct)) {  /* open gate = no film */
                 if (film_seen && ++trail_white >= SM_TRAIL_WHITE) {
                     printf("  [sm] end-of-roll: %u open-gate chunks after film "
                            "-> film fully scanned (%llu bytes)\n",
@@ -1111,7 +1122,7 @@ static int do_scan_sm(const char *script, const char *image_path, unsigned timeo
         int film_seen = 0;
         static pakon_dx_roll dx;
         sm_scan_loop(dev, img, &img_bytes, &nimg, &ncmd, &errs, timeout, max_mb,
-                     &film_seen, &dx);
+                     SM_WHITE_FRAC_PCT, &film_seen, &dx);
         write_dx_json(image_path, &dx);
         if (!film_seen)
             fprintf(stderr, "  [sm] WARNING: no film ever detected in the stream "
@@ -1743,13 +1754,28 @@ static double lc_table_mean(const double *t, size_t line_px, int c,
     return p1 > p0 ? s / (double)(p1 - p0) : 0;
 }
 
+/* Front-panel status-LED word (pakon_setup_panel); cosmetic, so a failed
+ * write is only logged. */
+static void lc_panel(pakon_dev *dev, const pakon_setup_state *st, unsigned t,
+                     uint16_t word)
+{
+    pakon_seq seq;
+    pakon_seq_init(&seq);
+    if (pakon_setup_panel(&seq, st, word) != PAKON_OK ||
+        pakon_cmd_run_seq(dev, &seq, t) != PAKON_OK)
+        fprintf(stderr, "light-cal: panel LED word 0x%04x not set\n", word);
+}
+
 /* The calibration itself, on a session after setup_session (F-135, Base 16
  * + IR, period 0x742), for `film`'s base densities (the duty caps). Leaves
  * acquire on and the LEDs at the open-gate values. With `with_tables`, also captures the fixed-pattern tables into
- * res (free with lc_result_free). Returns 0 on convergence. */
+ * res (free with lc_result_free). With `prior` (an earlier calibration for
+ * the same film), skips the LED current search and starts from its currents,
+ * duties and A/D settings, as TLB.dll's calibration between full ones does
+ * (pakon_calcache.h). Returns 0 on convergence. */
 static int light_cal_run(pakon_dev *dev, pakon_setup_state *st, unsigned t,
                          unsigned offset, pakon_film film, int with_tables,
-                         lc_result *res)
+                         const lc_result *prior, lc_result *res)
 {
     const double *density = pakon_lc_film_density(film);
     size_t line_px = (size_t)(st->reg5 - st->reg4);
@@ -1764,11 +1790,12 @@ static int light_cal_run(pakon_dev *dev, pakon_setup_state *st, unsigned t,
     if (!samples)
         return 1;
     pakon_cmd_service_events(dev, st->low, st->scn, t, NULL, NULL);
+    lc_panel(dev, st, t, PAKON_PANEL_CALIBRATING);   /* right LED blinks orange */
 
     /* 1. Dark offsets, LEDs off. */
     for (int c = 0; c < 3; c++) {
-        gain[c] = PAKON_LC_GAIN_START;
-        off[c] = PAKON_LC_OFFSET_START;
+        gain[c] = prior ? prior->gain[c] : PAKON_LC_GAIN_START;
+        off[c] = prior ? prior->off[c] : PAKON_LC_OFFSET_START;
     }
     /* IR LED alone (current 1, half duty) so every read can be aligned on
      * the IR block; the RGB black pixels stay dark. */
@@ -1804,7 +1831,8 @@ static int light_cal_run(pakon_dev *dev, pakon_setup_state *st, unsigned t,
         goto fail;
     }
 
-    /* 2. LED current search at the calibration duty caps. */
+    /* 2. LED current search at the calibration duty caps (full calibration
+     * only; otherwise the earlier currents and duties). */
     uint16_t cap[4], duty[4];
     unsigned curv[4] = { 1, 1, 1, 1 };
     int done[4] = { 0 };
@@ -1812,7 +1840,17 @@ static int light_cal_run(pakon_dev *dev, pakon_setup_state *st, unsigned t,
     const unsigned ceilv[4] = { ceil->r, ceil->g, ceil->b, ceil->ir };
     for (int c = 0; c < 4; c++)
         duty[c] = cap[c] = pakon_lc_duty_cap(period, density[c]);
-    for (int pass = 1; pass <= 8; pass++) {
+    if (prior) {
+        for (int c = 0; c < 4; c++) {
+            curv[c] = prior->cur[c] < 1 ? 1 : prior->cur[c] > ceilv[c] ? ceilv[c]
+                                                                       : prior->cur[c];
+            duty[c] = prior->duty[c] < 1 ? 1 : prior->duty[c] > period - 2
+                                                   ? period - 2 : prior->duty[c];
+        }
+        printf("current: from the last calibration, R%u G%u B%u IR%u\n", curv[0],
+               curv[1], curv[2], curv[3]);
+    }
+    for (int pass = 1; !prior && pass <= 8; pass++) {
         pakon_led_values cur = { (uint8_t)curv[0], (uint8_t)curv[1],
                                  (uint8_t)curv[2], (uint8_t)curv[3] };
         pakon_seq_init(&seq);
@@ -1838,7 +1876,7 @@ static int light_cal_run(pakon_dev *dev, pakon_setup_state *st, unsigned t,
         if (all)
             break;
     }
-    for (int c = 0; c < 4; c++)
+    for (int c = 0; !prior && c < 4; c++)
         duty[c] = pakon_lc_duty_start(cap[c], curv[c]);
 
     /* 3. Duty refine: two converged passes 200 ms apart. */
@@ -1939,9 +1977,11 @@ static int light_cal_run(pakon_dev *dev, pakon_setup_state *st, unsigned t,
         res->gain[c] = gain[c];
         res->off[c] = off[c];
     }
+    lc_panel(dev, st, t, PAKON_PANEL_IDLE);
     free(samples);
     return 0;
 fail:
+    lc_panel(dev, st, t, PAKON_PANEL_IDLE);
     lc_result_free(res);
     free(samples);
     return 1;
@@ -2037,7 +2077,7 @@ static int do_light_cal(unsigned timeout, const char *eeprom_dir,
         goto out;
     }
     if (light_cal_run(dev, &st, t, e.base[PAKON_EEPROM_BASE16].offset,
-                      PAKON_FILM_C41, 1, &res))
+                      PAKON_FILM_C41, 1, NULL, &res))
         goto stop;
     printf("\n=== light calibration (serial %u, Base 16 + IR) ===\n", e.serial);
     printf("        current  open-gate duty  scan duty (C-41)\n");
@@ -2257,9 +2297,115 @@ out:
  * loop with the event service, then the code-built teardown. Only the
  * firmware load is still a capture. Feed the film once the motor runs.
  */
+/* lc_result <-> saved record; the tables move (no copy). */
+static void lc_take_record(lc_result *res, pakon_cal_record *rec)
+{
+    memcpy(res->gain, rec->gain, sizeof res->gain);
+    memcpy(res->off, rec->off, sizeof res->off);
+    memcpy(res->cur, rec->cur, sizeof res->cur);
+    memcpy(res->duty, rec->duty, sizeof res->duty);
+    res->line_px = rec->line_px;
+    res->lines_dark = rec->lines_dark;
+    res->lines_bright = rec->lines_bright;
+    res->dark = rec->dark;
+    res->bright = rec->bright;
+    rec->dark = rec->bright = NULL;
+}
+
+static void lc_fill_record(pakon_cal_record *rec, const lc_result *res)
+{
+    memcpy(rec->gain, res->gain, sizeof rec->gain);
+    memcpy(rec->off, res->off, sizeof rec->off);
+    memcpy(rec->cur, res->cur, sizeof rec->cur);
+    memcpy(rec->duty, res->duty, sizeof rec->duty);
+    rec->line_px = res->line_px;
+    rec->lines_dark = res->lines_dark;
+    rec->lines_bright = res->lines_bright;
+    rec->dark = res->dark;
+    rec->bright = res->bright;
+}
+
+/*
+ * Calibrate before a scan only as often as TLB.dll does (pakon_calcache.h):
+ * reuse the calibration saved in DIR/calibration-<film>.bin while it is under
+ * an hour old, recalibrate from its currents when older, and from scratch
+ * when there is none, the last full one is over 20 h old, or `force`.
+ * Leaves the A/D and LEDs at the open-gate values either way. Returns 0.
+ */
+static int scan_calibrate(pakon_dev *dev, pakon_setup_state *st, unsigned t,
+                          const char *eeprom_dir, const pakon_eeprom *e,
+                          pakon_film film, int force, lc_result *res)
+{
+    const uint16_t period = 0x742;
+    unsigned offset = e->base[PAKON_EEPROM_BASE16].offset;
+    size_t line_px = (size_t)(st->reg5 - st->reg4);
+    char path[1024];
+    pakon_cal_record rec;
+    int have = !pakon_cal_path(path, sizeof path, eeprom_dir, film) &&
+               !pakon_cal_load(path, e->serial, offset, film, line_px, &rec);
+    if (!have)
+        memset(&rec, 0, sizeof rec);
+    int64_t now = (int64_t)time(NULL);
+    pakon_cal_action act = force ? PAKON_CAL_FULL
+                                 : pakon_cal_needed(now, rec.when, rec.when_full);
+    if (force)
+        printf("calibration: full (forced)\n");
+    else if (!have)
+        printf("calibration: full (none saved for %s)\n", pakon_film_name(film));
+    else
+        printf("calibration: %s (last %lld min ago, last full %lld min ago)\n",
+               pakon_cal_action_name(act), (long long)(now - rec.when) / 60,
+               (long long)(now - rec.when_full) / 60);
+    fflush(stdout);
+
+    if (act == PAKON_CAL_REUSE) {
+        lc_take_record(res, &rec);
+        pakon_led_values cur = { (uint8_t)res->cur[0], (uint8_t)res->cur[1],
+                                 (uint8_t)res->cur[2], (uint8_t)res->cur[3] };
+        pakon_seq seq;
+        pakon_cmd_service_events(dev, st->low, st->scn, t, NULL, NULL);
+        pakon_seq_init(&seq);
+        if (pakon_setup_afe(&seq, st, res->gain, res->off) != PAKON_OK ||
+            pakon_setup_leds(&seq, st, 0x03, &cur, res->duty, period) != PAKON_OK ||
+            pakon_cmd_run_seq(dev, &seq, t) != PAKON_OK) {
+            fprintf(stderr, "scan-code: applying the saved calibration failed\n");
+            lc_result_free(res);
+            return 1;
+        }
+        lc_sleep_ms(200);
+        return 0;
+    }
+
+    int rc = 1;
+    if (act == PAKON_CAL_REFRESH) {
+        lc_result prior = { 0 };
+        lc_take_record(&prior, &rec);
+        rc = light_cal_run(dev, st, t, offset, film, 1, &prior, res);
+        lc_result_free(&prior);
+        if (rc)
+            printf("calibration: refresh failed, calibrating from scratch\n");
+        else
+            rec.when = now;
+    }
+    if (rc) {
+        rc = light_cal_run(dev, st, t, offset, film, 1, NULL, res);
+        rec.when = rec.when_full = now;
+    }
+    pakon_cal_free(&rec);
+    if (rc)
+        return 1;
+    rec.serial = e->serial;
+    rec.offset = offset;
+    rec.film = film;
+    lc_fill_record(&rec, res);   /* borrows res's tables */
+    if (pakon_cal_save(path, &rec))
+        fprintf(stderr, "scan-code: could not save the calibration to %s\n", path);
+    return 0;
+}
+
 static int do_scan_code(unsigned timeout, const char *eeprom_dir,
                         const char *image_path, unsigned long max_mb,
-                        pakon_film film)
+                        pakon_film film, int recalibrate)
 {
     pakon_ctx *ctx;
     pakon_dev *dev;
@@ -2281,7 +2427,7 @@ static int do_scan_code(unsigned timeout, const char *eeprom_dir,
     printf("film: %s\n", film == PAKON_FILM_BW ? "B&W (silver)" :
                           film == PAKON_FILM_SLIDE ? "slide (colour reversal)" :
                           "colour negative");
-    if (light_cal_run(dev, &st, t, e.base[PAKON_EEPROM_BASE16].offset, film, 1, &res)) {
+    if (scan_calibrate(dev, &st, t, eeprom_dir, &e, film, recalibrate, &res)) {
         fprintf(stderr, "scan-code: calibration failed\n");
         goto stop;
     }
@@ -2316,6 +2462,7 @@ static int do_scan_code(unsigned timeout, const char *eeprom_dir,
         fprintf(stderr, "scan-code: scan start failed\n");
         goto stop;
     }
+    lc_panel(dev, &st, t, PAKON_PANEL_FEED);   /* right LED green: feed now */
     printf("  [sm] motor start (a0) sent -- feed the film now\n");
     fflush(stdout);
 
@@ -2324,7 +2471,7 @@ static int do_scan_code(unsigned timeout, const char *eeprom_dir,
     int film_seen = 0;
     static pakon_dx_roll dx;
     sm_scan_loop(dev, img, &img_bytes, &nimg, &ncmd, &errs, timeout, max_mb,
-                 &film_seen, &dx);
+                 SM_WHITE_FRAC_CODE_PCT, &film_seen, &dx);
     write_dx_json(image_path, &dx);
     printf("scan-code: %lu image reads, %llu bytes -> %s (%lu errors)%s\n", nimg,
            img_bytes, image_path, errs, film_seen ? "" : " -- no film seen");
@@ -2334,6 +2481,7 @@ stop:
     pakon_setup_teardown(&seq, &st);
     printf("teardown (code-built): %s\n", pakon_cmd_run_seq(dev, &seq, t) == PAKON_OK
                                           ? "OK" : "FAILED");
+    lc_panel(dev, &st, t, PAKON_PANEL_IDLE);   /* right LED off: done */
 out:
     if (img)
         fclose(img);
@@ -2472,7 +2620,7 @@ static void usage(const char *argv0)
         "       %s --setup --eeprom-dir DIR [--teardown]  controller init + Base 16 configure, built in code\n"
         "       %s --calib-probe --eeprom-dir DIR         static dark/lit line levels (F-135, open gate)\n"
         "       %s --light-cal --eeprom-dir DIR [--flat-out FILE]  light calibration in code (F-135, open gate)\n"
-        "       %s --scan-code --eeprom-dir DIR [--image OUT] [--film c41|bw|slide]  scan with nothing replayed (F-135)\n"
+        "       %s --scan-code --eeprom-dir DIR [--image OUT] [--film c41|bw|slide] [--recalibrate]  scan with nothing replayed (F-135)\n"
         "       %s --film-sense SECONDS --eeprom-dir DIR  run the transport, log DX levels (F-135)\n"
         "       %s --advance-code SECONDS --eeprom-dir DIR  timed film advance in code (F-135)\n"
         "       %s --eject [--eject-seconds N] --eeprom-dir DIR  run until the strip is out (F-135)\n"
@@ -2509,6 +2657,9 @@ static void usage(const char *argv0)
         "  --film c41|bw|slide  --scan-code film type: colour negative (default),\n"
         "                silver B&W or slide (the OEM film-base densities for the\n"
         "                LED duties)\n"
+        "  --recalibrate  --scan-code: calibrate from scratch even if the saved\n"
+        "                calibration (DIR/calibration-<film>.bin) is recent; it is\n"
+        "                reused for an hour, then refreshed, like the OEM software\n"
         "  --max-mb N    --scan-sm/--scan-code safety cap on image MB (default 4096,\n"
         "                0=off); a full 36-exposure roll is up to ~2 GB\n"
         "  --timeout MS  USB per-transfer timeout in ms (default 1000)\n"
@@ -2529,7 +2680,7 @@ int main(int argc, char **argv)
     unsigned advance_seconds = 15;
     int want_calibrate = 0, cal_verbose = 0, want_read_params = 0, want_configure = 0;
     int want_setup = 0, want_teardown = 0, want_probe = 0, want_lightcal = 0;
-    int want_scan_code = 0;
+    int want_scan_code = 0, recalibrate = 0;
     pakon_film film = PAKON_FILM_C41;
     unsigned film_sense_s = 0, advance_code_s = 0, eject_s = 60;
     int want_eject = 0;
@@ -2571,6 +2722,8 @@ int main(int argc, char **argv)
             film_sense_s = (unsigned)strtoul(argv[++i], NULL, 0);
         } else if (!strcmp(argv[i], "--scan-code")) {
             want_scan_code = 1;
+        } else if (!strcmp(argv[i], "--recalibrate")) {
+            recalibrate = 1;
         } else if (!strcmp(argv[i], "--film") && i + 1 < argc) {
             const char *f = argv[++i];
             if (pakon_film_parse(f, &film)) {
@@ -2650,7 +2803,8 @@ int main(int argc, char **argv)
     if (film_sense_s)
         return do_film_sense(timeout, eeprom_dir, film_sense_s > 120 ? 120 : film_sense_s);
     if (want_scan_code)
-        return do_scan_code(timeout, eeprom_dir, image_path, max_mb, film);
+        return do_scan_code(timeout, eeprom_dir, image_path, max_mb, film,
+                            recalibrate);
     if (want_lightcal)
         return do_light_cal(timeout, eeprom_dir, flat_out);
     if (want_probe)

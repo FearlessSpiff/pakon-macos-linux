@@ -287,6 +287,18 @@ int main(int argc, char **argv)
         return 2;
     }
     const char *dir = argv[1];
+
+    {
+        /* Every delay cleared, also past the first frame (frames added by
+         * hand, like probe_rearm's, keep whatever delay is in the slot). */
+        static pakon_seq seq;
+        memset(seq.delay_ms, 0xA5, sizeof seq.delay_ms);
+        pakon_seq_init(&seq);
+        int clear = 1;
+        for (size_t i = 0; i < PAKON_SEQ_MAX; i++)
+            clear &= seq.delay_ms[i] == 0;
+        CHECK(clear && seq.n == 0, "pakon_seq_init clears every delay");
+    }
     pakon_scan_mode m;
     uint16_t s, e;
 
@@ -374,6 +386,15 @@ int main(int argc, char **argv)
         pakon_setup_acquire(&seq, &st, 1);
         seq_hex(&seq, hx, sizeof hx);
         CHECK(!strcmp(hx, "0206240382006101"), "acquire on = reg 0 0x0161");
+
+        pakon_seq_init(&seq);
+        pakon_setup_panel(&seq, &st, PAKON_PANEL_CALIBRATING);
+        pakon_setup_panel(&seq, &st, PAKON_PANEL_FEED);
+        pakon_setup_panel(&seq, &st, PAKON_PANEL_IDLE);
+        seq_hex(&seq, hx, sizeof hx);
+        CHECK(!strcmp(hx, "020624038209d400 0206240382091500 0206240382091700"),
+              "panel LED words: calibrating 0x00d4, feed 0x0015, idle 0x0017 "
+              "(captured frame layout, 0206240382091700)");
 
         pakon_seq_init(&seq);
         pakon_setup_afe(&seq, &st, (const int[]){ 13, 13, 13 },
