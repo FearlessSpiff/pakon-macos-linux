@@ -60,7 +60,7 @@ Gain `0x3F` zeroes the readout on our unit; stay below it.
 | 4 | pixel start | the per-unit EEPROM **Offset** for the resolution base; ≥ 6 (≥ 3 dual-tap) |
 | 5 | pixel end | start + height (height 2000); ≤ `0x848` single-tap, `0x424` dual-tap |
 | 6 | integration / line period | ≤ `0xFFD`; `0x0C1A` = base 16 with IR |
-| 9 | status LEDs | front-panel LED colour word, not brightness |
+| 9 | status LEDs | front-panel LED word, not brightness. Middle and right LEDs are red/green bicolour (the left one is always green). Bits, active low: `0x01` right red, `0x02` right green, `0x04` middle red, `0x08` middle green (off = both set; red + green = orange). Blink: `0x40` right red, `0x80` right green, `0x100` middle red, `0x200` middle green. Captured: `0x0017` idle (middle green), `0x0313` (middle orange/off blink, scan.pakscan's calibration), `0x0217`/`0x0295`/`0x0215` while scanning, `0x001F` all off. We follow TLX on the right LED: `0x00D4` (orange/off blink) while calibrating, `0x0015` (solid green) once the motor runs and the film can be fed, `0x0017` (off) when the scan is done. Decoded on serial 3054, 2026-10-19; `0x0040` was never captured but behaves as predicted |
 | 10 (`0xA`) | timing | `0x0400` at init |
 | 11 (`0xB`) | timing | written 0 with the integration setting |
 
