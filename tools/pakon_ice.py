@@ -2,8 +2,9 @@
 pakon_ice.py -- infrared dust and scratch removal ("Digital ICE") for Pakon
 scans.
 
-The F-135 scans every line with an infrared LED as well (the trailing block of
-each 8000-sample row). Film dyes are nearly transparent to infrared, dust and
+The F-135 scans every line with an infrared LED as well (the trailing quarter
+of each row: 8000 / 6000 / 4000 samples at Base 16 / 8 / 4; rows scanned with
+IR off, as B&W is, have no IR block and nothing to clean with). Film dyes are nearly transparent to infrared, dust and
 scratches are not, so the IR plane is a map of the defects; the masked pixels
 are rebuilt from the clean film around them.
 
@@ -75,6 +76,12 @@ PAKON_METERING = 0.985
 
 # Pakon Base 16: 2000 px across the 24 mm frame height.
 PAKON_BASE16_DPI = round(2000 / (24 / 25.4))
+
+
+def pakon_dpi(width):
+    """Scan resolution for a line `width` px across the 24 mm frame height:
+    2117 / 1588 / 1058 dpi at Base 16 / 8 / 4."""
+    return round(width / (24 / 25.4))
 
 # Row spans (dy, dx_lo, dx_hi) of the 9x9 octagon (max(|dx|,|dy|) <= 4,
 # |dx| + |dy| <= 6) and the 5x5 one (<= 2, <= 3).
@@ -154,7 +161,7 @@ def reduce(a, k=4):
 
 class Params:
     def __init__(self, cal, dpi=PAKON_BASE16_DPI, model="ls5000", quality="normal",
-                 metering_target=0.9, spread_rows=True):
+                 metering_target=0.9, spread_rows=True, col_noise=None):
         p = PROFILES[model]
         c, ir_ref = cal
         self.c, self.ir_ref = float(c), float(ir_ref)
@@ -172,6 +179,15 @@ class Params:
         self.min3 = dpi > MIN3_DPI
         self.cross_beta = dpi > p["contrast_dpi"]
         self.spread_rows = spread_rows
+        # How far below the clear-film reference a defect starts to count
+        # (B_ANCHOR plus the metering shift): ~209 density units, ~3.5%.
+        # With col_noise (per-column IR noise relative to the middle,
+        # ir_noise_factor), noisier columns get a proportionally wider margin.
+        margin = (M - float(density(_anchor(B_ANCHOR)))) + \
+                 (M - float(density(_anchor(min(max(metering_target, 0.0), 1.0)))))
+        self.col_extra = 0.0 if col_noise is None else \
+            ((np.clip(np.asarray(col_noise, np.float32), 1.0, 4.0) - 1.0) *
+             margin)[None, :].astype(np.float32)
 
     def weight(self, g):
         return np.clip(1.0 + (self.ramp_bias - g) * self.ramp_s, W_FLOOR, 1.0)
@@ -191,11 +207,11 @@ def confidence(g, p):
     little softer than the visible ones in the scan direction, so a defect's
     IR footprint is narrower than its visible one."""
     if not p.min3:
-        return p.weight(g).astype(np.float32)
+        return p.weight(g + p.col_extra).astype(np.float32)
     m = np.minimum(np.minimum(_shift_cols(g, -1), g), _shift_cols(g, 1))
     if p.spread_rows:
         m = np.minimum(np.minimum(_shift_rows(m, -1), m), _shift_rows(m, 1))
-    return p.weight(m).astype(np.float32)
+    return p.weight(m + p.col_extra).astype(np.float32)
 
 
 def _shift_cols(a, k):
@@ -365,7 +381,7 @@ def rebuild(g, w, dens, mask, p):
 # ----- the whole pass
 
 def clean(rgb, ir, cal=None, dpi=PAKON_BASE16_DPI, model="ls5000", quality="normal",
-          metering_target=PAKON_METERING, spread_rows=True):
+          metering_target=PAKON_METERING, spread_rows=True, col_noise=None):
     """Remove dust from one frame. rgb: (H, W, 3) linear 0..M (above black);
     ir: (H, W) linear 0..M. metering_target shifts the gate (nkscan's
     correction for its own auto-exposure); 1.0 leaves the gate as Nikon's,
@@ -374,7 +390,8 @@ def clean(rgb, ir, cal=None, dpi=PAKON_BASE16_DPI, model="ls5000", quality="norm
     margin by however far clear film sits below full scale, and on a C-41
     roll (clear film at ~0.75) only the densest defects were caught. The
     default, PAKON_METERING, widens Nikon's margin a little (see there).
-    Returns
+    col_noise (per column, from ir_noise_factor) widens it further where the
+    IR plane is noisier: the first columns of a Pakon line. Returns
     (cleaned (H, W, 3) float32, mask of rebuilt pixels, (c, ir_ref)), or the
     input unchanged when there is no clear film to calibrate on."""
     rgb = np.asarray(rgb, np.float32)
@@ -385,7 +402,7 @@ def clean(rgb, ir, cal=None, dpi=PAKON_BASE16_DPI, model="ls5000", quality="norm
     if cal is None:
         return rgb.copy(), done, None
     p = Params(cal, dpi=dpi, model=model, quality=quality, metering_target=metering_target,
-               spread_rows=spread_rows)
+               spread_rows=spread_rows, col_noise=col_noise)
     g = gate(rgb[..., 0], ir, p)
     w = confidence(g, p)
     mask = decide(g, w, p)
@@ -427,15 +444,76 @@ def measure_ir_shift(red, ir, search=40):
 
 
 def ir_plane(img, flat, rows, shift, metering_target=0.9):
-    """The IR block of marker-aligned 8000-sample rows (img[:, 6000:8000])
-    for the visible rows `rows` (indices into img, after registration),
-    shifted by `shift`, flat-fielded per column against the calibration's
-    open-gate IR (its dark table is taken with the IR LED on, so the black
-    level is used instead), and scaled so the open gate reads
-    metering_target * M."""
+    """The IR block of marker-aligned rows with an IR lane (the last quarter:
+    img[:, 3w:4w], w = row / 4) for the visible rows `rows` (indices into
+    img, after registration), shifted by `shift`, flat-fielded per column
+    against the calibration's open-gate IR (its dark table is taken with the
+    IR LED on, so the black level is used instead), and scaled so the open
+    gate reads metering_target * M. When the scan ran the IR LED at another
+    duty than the calibration (slide and B&W: film-base density 0.08, so
+    1.2x), the gain takes the ratio out, as the decoder does for the visible
+    channels (`scan_duties`)."""
     from pakon_image import _RAW_BLACK
+    w = img.shape[1] // 4
+    if int(flat.get("row_samples", 4 * w)) != 4 * w or not flat.get("ir_lane", True):
+        raise ValueError("ir_plane: the raw has no IR lane (scanned with IR off?)")
     r = np.clip(np.asarray(rows) + shift, 0, img.shape[0] - 1)
-    ir = img[r, 6000:8000].astype(np.float32) - _RAW_BLACK
-    bright = np.asarray(flat["bright"][3], np.float32)[int(flat["px0"]):] - _RAW_BLACK
+    ir = img[r, 3 * w:4 * w].astype(np.float32) - _RAW_BLACK
+    px0 = int(flat["px0"])
+    bright = np.asarray(flat["bright"][3], np.float32)[px0:px0 + w] - _RAW_BLACK
     gain = np.where(bright > 0, metering_target * M / np.maximum(bright, 1.0), 0.0)
+    duty, scan = flat.get("duties"), flat.get("scan_duties")
+    if duty and scan and scan[3] > 0:
+        gain = gain * (duty[3] / scan[3])
     return np.clip(ir * gain[None, :], 0.0, M)
+
+
+def ir_noise_factor(flat, width):
+    """Per-column IR noise factor for the gate margin, from the calibration's
+    open-gate IR: 0.9 / (open gate / its 90th percentile), at least 1, so
+    only columns that get under 90% of the line's plateau of light are
+    widened and the rest keep the margin exactly (normalising to the median
+    instead widened half the line a little and dropped faint real defects).
+    The gate's aperture shades the start of every Pakon line (open gate
+    0.26x the middle at column 0, back to ~0.9x by column 40-100), and the
+    flat field that evens it out scales the noise up with it: measured 2.6x
+    (Base 4) and 3.8x (Base 16) at column 0, between 1/sqrt(light) and
+    1/light, so 1/light is the safe side (serial 3054, 2026-10-20). Without
+    it those columns' noise passes the gate as specks: 15-25% of every
+    frame's rebuilt pixels in the first 2-3% of the columns."""
+    px0 = int(flat["px0"])
+    from pakon_image import _RAW_BLACK
+    b = np.asarray(flat["bright"][3], np.float32)[px0:px0 + width] - _RAW_BLACK
+    top = float(np.percentile(b, 90))
+    rel = np.clip(b / top, 1e-3, None) if top > 0 else np.ones(width, np.float32)
+    return np.maximum(0.9 / rel, 1.0).astype(np.float32)
+
+
+def ir_tail_factor(ir, window=15, pct=0.5):
+    """Per-column gate-margin factor from the frame's own IR: how deep its
+    rare dark pixels go (the pct-th percentile of each pixel's departure
+    from a 5-row running median) relative to the middle of the line (75th
+    percentile of the central half, so ordinary columns stay at 1), median-
+    filtered over `window` columns so a real scratch along the scan, one or
+    two columns wide, cannot raise its own margin; at least 1, at most 4.
+
+    The first ~40-60 columns of every Pakon line have a heavy dark tail in
+    the IR: 3-6x deeper than mid-line (up to 9.5x), at Base 4 / 8 / 16 and
+    on C-41 and slide alike, while the light fall-off there
+    (ir_noise_factor) and the typical noise spread are back to 1.1-1.5x by
+    column 10 (serial 3054, 2026-10-20). Those single dark pixels passed the
+    gate as dust. Use max(ir_noise_factor, ir_tail_factor)."""
+    ir = np.asarray(ir, np.float32)
+    H, W = ir.shape
+    if H < 50 or W < 4 * window:
+        return np.ones(W, np.float32)
+    st = np.stack([_shift_rows(ir, k) for k in (-2, -1, 0, 1, 2)])
+    dev = (ir - np.median(st, axis=0)) / max(float(np.median(ir)), 1.0)
+    tail = np.maximum(-np.percentile(dev[3:-3], pct, axis=0), 1e-6)
+    ref = float(np.percentile(tail[W // 4: 3 * W // 4], 75))
+    r = window // 2
+    pad = np.concatenate([np.repeat(tail[:1], r), tail, np.repeat(tail[-1:], r)])
+    win = np.lib.stride_tricks.sliding_window_view(pad, window)
+    k = np.median(win, axis=1) / ref
+    return np.clip(k, 1.0, 4.0).astype(np.float32)
+
