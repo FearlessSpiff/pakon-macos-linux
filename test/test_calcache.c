@@ -43,10 +43,14 @@ int main(void)
         return 1;
     }
     char path[1024];
-    CHECK(pakon_cal_path(path, sizeof path, dir, PAKON_FILM_BW) == 0 &&
-          strstr(path, "/calibration-bw.bin"), "path per film");
+    CHECK(pakon_cal_path(path, sizeof path, dir, PAKON_FILM_BW, 8) == 0 &&
+          strstr(path, "/calibration-bw-base8.bin"), "path per film and base");
+    CHECK(pakon_cal_path(path, sizeof path, dir, PAKON_FILM_BW, 12) == -1, "bad base");
+    CHECK(pakon_cal_path(path, sizeof path, dir, PAKON_FILM_BW, 16) == 0 &&
+          strstr(path, "/calibration-bw.bin"), "Base 16 keeps the old name");
     char tiny[8];
-    CHECK(pakon_cal_path(tiny, sizeof tiny, dir, PAKON_FILM_BW) == -1, "path too long");
+    CHECK(pakon_cal_path(tiny, sizeof tiny, dir, PAKON_FILM_BW, 16) == -1,
+          "path too long");
 
     enum { LP = 37 };
     pakon_cal_record rec = {
@@ -85,6 +89,10 @@ int main(void)
     CHECK(pakon_cal_load(path, 3054, 43, PAKON_FILM_C41, LP, &got) == -1, "other film: miss");
     CHECK(pakon_cal_load(path, 3054, 43, PAKON_FILM_BW, LP + 1, &got) == -1,
           "other line length: miss");
+    CHECK(pakon_cal_load(path, 3054, 43, PAKON_FILM_BW, 0, &got) == 0 &&
+          got.line_px == LP && got.dark && got.dark[LP] == rec.dark[LP],
+          "line length 0: the saved one");
+    pakon_cal_free(&got);
 
     /* Truncated file. */
     FILE *f = fopen(path, "r+b");

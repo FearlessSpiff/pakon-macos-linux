@@ -35,9 +35,17 @@ pakon_cal_action pakon_cal_needed(int64_t now, int64_t when, int64_t when_full)
     return PAKON_CAL_REUSE;
 }
 
-int pakon_cal_path(char *buf, size_t size, const char *dir, pakon_film film)
+int pakon_cal_path(char *buf, size_t size, const char *dir, pakon_film film,
+                   int base)
 {
-    int n = snprintf(buf, size, "%s/calibration-%s.bin", dir, pakon_film_name(film));
+    int n;
+    if (base == 16)
+        n = snprintf(buf, size, "%s/calibration-%s.bin", dir, pakon_film_name(film));
+    else if (base == 8 || base == 4)
+        n = snprintf(buf, size, "%s/calibration-%s-base%d.bin", dir,
+                     pakon_film_name(film), base);
+    else
+        return -1;
     return n < 0 || (size_t)n >= size ? -1 : 0;
 }
 
@@ -124,10 +132,11 @@ int pakon_cal_load(const char *path, unsigned serial, unsigned offset,
         rec->lines_dark = (size_t)v64[1];
         rec->lines_bright = (size_t)v64[2];
         bad = rec->serial != serial || rec->offset != offset || rec->film != film ||
-              rec->line_px != line_px || line_px == 0 || line_px > CAL_MAX_LINE_PX;
+              (line_px && rec->line_px != line_px) || rec->line_px == 0 ||
+              rec->line_px > CAL_MAX_LINE_PX;
     }
     if (!bad) {
-        size_t nt = PAKON_LC_NCH * line_px;
+        size_t nt = PAKON_LC_NCH * rec->line_px;
         rec->dark = malloc(nt * sizeof *rec->dark);
         rec->bright = malloc(nt * sizeof *rec->bright);
         bad = !rec->dark || !rec->bright ||

@@ -2429,27 +2429,22 @@ static void lc_fill_record(pakon_cal_record *rec, const lc_result *res)
 
 /*
  * Calibrate before a scan only as often as TLB.dll does (pakon_calcache.h):
- * reuse the calibration saved in DIR/calibration-<film>.bin while it is under
- * an hour old, recalibrate from its currents when older, and from scratch
- * when there is none, the last full one is over 20 h old, or `force`.
- * Base 16 only: at Base 8 / 4 every scan calibrates from scratch (the saved
- * record has no base, and the Base 8 line width is only known by measuring).
- * Leaves the A/D and LEDs at the open-gate values either way. Returns 0.
+ * reuse the calibration saved in DIR/calibration-<film>[-base<N>].bin while
+ * it is under an hour old, recalibrate from its currents when older, and
+ * from scratch when there is none, the last full one is over 20 h old, or
+ * `force`. One record per film and base; at Base 8 the saved line width is
+ * taken as measured (it is not the window). Leaves the A/D and LEDs at the
+ * open-gate values either way. Returns 0.
  */
 static int scan_calibrate(pakon_dev *dev, pakon_setup_state *st, unsigned t,
                           const char *eeprom_dir, const pakon_eeprom *e,
                           int base, unsigned offset, uint16_t period,
                           pakon_film film, int force, lc_result *res)
 {
-    if (base != 16) {
-        printf("calibration: full (Base %d is not cached)\n", base);
-        fflush(stdout);
-        return light_cal_run(dev, st, t, offset, period, film, 1, NULL, res);
-    }
-    size_t line_px = (size_t)(st->reg5 - st->reg4);
+    size_t line_px = st->low89 ? 0 : (size_t)(st->reg5 - st->reg4);
     char path[1024];
     pakon_cal_record rec;
-    int have = !pakon_cal_path(path, sizeof path, eeprom_dir, film) &&
+    int have = !pakon_cal_path(path, sizeof path, eeprom_dir, film, base) &&
                !pakon_cal_load(path, e->serial, offset, film, line_px, &rec);
     if (!have)
         memset(&rec, 0, sizeof rec);
@@ -2459,7 +2454,8 @@ static int scan_calibrate(pakon_dev *dev, pakon_setup_state *st, unsigned t,
     if (force)
         printf("calibration: full (forced)\n");
     else if (!have)
-        printf("calibration: full (none saved for %s)\n", pakon_film_name(film));
+        printf("calibration: full (none saved for %s, Base %d)\n",
+               pakon_film_name(film), base);
     else
         printf("calibration: %s (last %lld min ago, last full %lld min ago)\n",
                pakon_cal_action_name(act), (long long)(now - rec.when) / 60,

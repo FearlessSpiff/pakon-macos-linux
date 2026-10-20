@@ -16,7 +16,8 @@
  *
  * The OEM keeps the record in the registry, so it outlives the program. We
  * keep it in a file next to the EEPROM archive, one per film type (the duty
- * caps depend on the film-base densities).
+ * caps depend on the film-base densities) and resolution base (each base has
+ * its own integration time, LED period and calibration line).
  */
 #ifndef PAKON_CALCACHE_H
 #define PAKON_CALCACHE_H
@@ -51,7 +52,7 @@ pakon_cal_action pakon_cal_needed(int64_t now, int64_t when, int64_t when_full);
 /* One calibration: the light-calibration result and what it is valid for. */
 typedef struct {
     unsigned   serial;              /* EEPROM serial */
-    unsigned   offset;              /* EEPROM Base 16 Offset */
+    unsigned   offset;              /* EEPROM Offset for the base */
     pakon_film film;
     int64_t    when, when_full;     /* time() of the last / last full calibration */
     int        gain[3], off[3];     /* A/D gain codes and offsets, R, G, B */
@@ -62,8 +63,11 @@ typedef struct {
     double    *dark, *bright;
 } pakon_cal_record;
 
-/* `dir`/calibration-<film>.bin. Returns 0, or -1 if it does not fit. */
-int pakon_cal_path(char *buf, size_t size, const char *dir, pakon_film film);
+/* `dir`/calibration-<film>.bin at Base 16 (the name it has always had),
+ * `dir`/calibration-<film>-base<N>.bin at Base 8 / 4. Returns 0, or -1 for
+ * another base or if it does not fit. */
+int pakon_cal_path(char *buf, size_t size, const char *dir, pakon_film film,
+                   int base);
 
 /* Write the record (tables required). Returns 0 on success. */
 int pakon_cal_save(const char *path, const pakon_cal_record *rec);
@@ -72,7 +76,8 @@ int pakon_cal_save(const char *path, const pakon_cal_record *rec);
  * Read a record and check it is for this scanner, film and line: returns 0
  * with the tables allocated (free with pakon_cal_free), or -1 when the file
  * is missing, unreadable, from another version, or does not match `serial`,
- * `offset`, `film` and `line_px`.
+ * `offset`, `film` and `line_px`. `line_px` 0 accepts the saved width (Base
+ * 8, where the line is measured, not known before calibrating).
  */
 int pakon_cal_load(const char *path, unsigned serial, unsigned offset,
                    pakon_film film, size_t line_px, pakon_cal_record *rec);
