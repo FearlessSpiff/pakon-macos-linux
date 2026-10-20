@@ -11,6 +11,7 @@ run the OEM C-41 inversion + rpd.pf render, and write per-frame TIFF/JPEG.
 
 This mirrors a dedicated minilab: detect → operator confirms frames → export.
 """
+import json
 import os
 import sys
 from pathlib import Path
@@ -50,8 +51,10 @@ from pakon_image import (  # noqa: E402
     load_flat_field,
     oem_roll_balance,
     oem_rpd,
+    _RAW_BLACK,
 )
 import oem_sba  # noqa: E402
+import pakon_ice  # noqa: E402
 
 from . import dx, eeprom  # noqa: E402
 
@@ -156,6 +159,10 @@ def _sba_shifts(crops, oem, roll=None):
 
 
 RIBBON_PATH = WORK_DIR / "ribbon.npy"
+# The IR plane of the ribbon (row for row), flat-fielded, for dust removal
+# at export (tools/pakon_ice.py); only for raws scanned with IR, with the
+# calibration's IR table.
+IR_RIBBON_PATH = WORK_DIR / "ir_ribbon.npy"
 PREVIEW_PATH = WORK_DIR / "preview.jpg"
 _PREVIEW_H = 500               # target short-axis (frame height) of the preview
 _FRAME_W = 3000                # fixed crop width (long axis): 3000x2000, 3:2
@@ -163,8 +170,10 @@ _FRAME_W = 3000                # fixed crop width (long axis): 3000x2000, 3:2
 
 def _build_ribbon(raw_path, emit):
     """Marker-align rows → deinterleave (R,G,B triplets at stride 3, IR trailing)
-    → trilinear registration. Returns the FULL assembled negative ribbon
-    (rows=long axis, cols=width).
+    → trilinear registration. Returns (rgb, ice): the FULL assembled negative
+    ribbon (rows=long axis, cols=width), and for dust removal (ir plane
+    uint16 row for row with rgb, flat-field dict), or None when the raw has
+    no IR lane or its flat field no IR table.
 
     Aligning to the per-scanline marker bit fixes the triplet phase regardless of
     where the 0x86 capture started, so the colour cast is consistent across scans
@@ -220,7 +229,19 @@ def _build_ribbon(raw_path, emit):
             emit(f"Flat field: {Path(flat_path).name}", 0.55)
         except (OSError, ValueError, KeyError) as exc:
             print(f"flat field not applied: {exc}", file=sys.stderr)
-    return rgb
+
+    # IR plane for dust removal: register_zones keeps red as the row
+    # reference, so ribbon row y is raw row y (IR/visible offset measured 0).
+    ice = None
+    if has_ir and flat_path:
+        try:
+            with open(flat_path) as fh:
+                flat = json.load(fh)
+            ir = pakon_ice.ir_plane(img, flat, np.arange(rgb.shape[0]), 0)
+            ice = ((ir + 0.5).astype(np.uint16), flat)
+        except (OSError, ValueError, KeyError, IndexError) as exc:
+            print(f"no IR plane for dust removal: {exc}", file=sys.stderr)
+    return rgb, ice
 
 
 FILMS = ("c41", "bw", "slide")   # colour negative, silver B&W, slide (E-6)
@@ -243,7 +264,7 @@ def prescan(raw_path, progress=None, film="c41", fmt="full") -> dict:
         if progress:
             progress(step, round(pct, 3))
 
-    rgb = _build_ribbon(raw_path, emit)
+    rgb, ice = _build_ribbon(raw_path, emit)
     rows, cols = rgb.shape[:2]
 
     emit("Measuring film base", 0.62)
@@ -261,6 +282,13 @@ def prescan(raw_path, progress=None, film="c41", fmt="full") -> dict:
 
     emit("Caching ribbon", 0.75)
     np.save(str(RIBBON_PATH), rgb)        # full-res cache for export
+    if ice is not None:
+        np.save(str(IR_RIBBON_PATH), ice[0])
+        # The gate-margin factor from the calibration's IR (per column).
+        np.save(str(WORK_DIR / "ir_noise.npy"), pakon_ice.ir_noise_factor(ice[1], cols))
+    else:
+        for p in (IR_RIBBON_PATH, WORK_DIR / "ir_noise.npy"):
+            p.unlink(missing_ok=True)
 
     emit("Rendering preview", 0.85)
     ds = max(1, int(round(cols / _PREVIEW_H)))   # ~_PREVIEW_H px tall frames
@@ -306,6 +334,7 @@ def prescan(raw_path, progress=None, film="c41", fmt="full") -> dict:
         "scale": float(scale),             # preview_x = full_row * scale
         "film": film,
         "flare": None if flare is None else [float(x) for x in flare],
+        "ice": ice is not None,            # an IR plane to remove dust with
     }
 
 
@@ -322,7 +351,7 @@ def autoframe(ribbon_path, film="c41", fmt="full") -> dict:
 def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
                   frame_w=_FRAME_W, progress=None, rpd_balance=None,
                   roll_centres=None, film="c41", flare=None,
-                  dx_film=None) -> list[dict]:
+                  dx_film=None, ice=False) -> list[dict]:
     """Stage 2. Crop the cached ribbon at each confirmed centre, invert and
     render, write TIFF/JPEG. With the scanner's EEPROM archive and rpd.pf this
     is the OEM F-135 colour path (density LUT -> NegMatrix -> rpd.pf), for both
@@ -341,7 +370,10 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
     `flare` (the prescan's measure_slide_flare).
 
     `dx_film` (web/dx.py lookup) puts the film's name and ISO in every file's
-    metadata; None writes none."""
+    metadata; None writes none.
+
+    `ice` removes dust and scratches from each frame with its IR plane
+    (tools/pakon_ice.py) before it is rendered, when the prescan cached one."""
     grey = film == "bw"
     slide = _slide_path() if film == "slide" else None
     WORK_DIR.mkdir(parents=True, exist_ok=True)
@@ -368,6 +400,26 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
     def crop(i):
         return crop_at(centres[i], int(widths[i]) if widths else frame_w)
 
+    ir_rib = ir_noise = None
+    if ice and IR_RIBBON_PATH.exists():
+        ir_rib = np.load(str(IR_RIBBON_PATH), mmap_mode="r")
+        ir_noise = np.load(str(WORK_DIR / "ir_noise.npy"))
+    dpi = pakon_ice.pakon_dpi(rgb.shape[1])
+
+    def clean(i, part):
+        """The crop with dust and scratches rebuilt from the IR plane (black
+        300 off for ICE, back on after); unchanged without an IR plane."""
+        if ir_rib is None:
+            return part
+        fw = int(widths[i]) if widths else frame_w
+        r1 = min(rows, max(0, int(centres[i]) - fw // 2) + fw)
+        ir = np.asarray(ir_rib[max(0, r1 - fw):r1], np.float32)
+        f = np.clip(part.astype(np.float32) - _RAW_BLACK, 0, 65535)
+        k = np.maximum(ir_noise, pakon_ice.ir_tail_factor(ir))
+        out, mask, _ = pakon_ice.clean(f, ir, dpi=dpi, col_noise=k)
+        print(f"ICE frame {i + 1}: {100 * mask.mean():.2f}% rebuilt", flush=True)
+        return np.clip(out + _RAW_BLACK + 0.5, 0, 65535).astype(np.uint16)
+
     # OEM scene balance of the confirmed frames against the whole roll (all
     # crops first); falls back to the prescan roll balance.
     shifts = None
@@ -378,8 +430,9 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
         shifts = _sba_shifts([crop(i) for i in range(n)], oem, roll)
 
     for i in range(n):
-        emit(f"Exporting frame {i + 1}/{n}", (i + 1) / max(1, n))
-        part = np.ascontiguousarray(crop(i))
+        emit(f"Exporting frame {i + 1}/{n}" + (" (removing dust)" if ir_rib is not None
+                                                 else ""), (i + 1) / max(1, n))
+        part = clean(i, np.ascontiguousarray(crop(i)))
         if rot_k:
             part = np.ascontiguousarray(np.rot90(part, k=rot_k))
 
