@@ -49,23 +49,74 @@ long pakon_lc_find_origin(const uint16_t *s, size_t nsamples, size_t line_px,
     return best >= min_contrast ? arg : -1;
 }
 
-size_t pakon_lc_find_line_px(const uint16_t *s, size_t nsamples, size_t lo,
-                             size_t hi)
+long pakon_lc_marker_origin(const uint16_t *s, size_t nsamples, size_t line_len)
 {
+    size_t lines = line_len ? nsamples / line_len : 0;
+    if (!s || lines < 2)
+        return -1;
+    unsigned *hits = calloc(line_len, sizeof *hits);
+    if (!hits)
+        return -1;
+    for (size_t i = 0; i < lines * line_len; i++)
+        if (s[i] & 1u)
+            hits[i % line_len]++;
+    size_t arg = 0;
+    for (size_t i = 1; i < line_len; i++)
+        if (hits[i] > hits[arg])
+            arg = i;
+    unsigned best = hits[arg];
+    free(hits);
+    return best * 10 >= lines * 6 ? (long)arg : -1;
+}
+
+size_t pakon_lc_marker_line_len(const uint16_t *s, size_t nsamples)
+{
+    size_t prev = 0, best = 0, n = 0, have = 0;
+    size_t len[64];
+    unsigned cnt[64];
+    if (!s)
+        return 0;
+    for (size_t i = 0; i < nsamples; i++) {
+        if (!(s[i] & 1u))
+            continue;
+        if (have) {
+            size_t d = i - prev, k = 0;
+            while (k < n && len[k] != d)
+                k++;
+            if (k == n && n < 64) {
+                len[n] = d;
+                cnt[n++] = 0;
+            }
+            if (k < n)
+                cnt[k]++;
+        }
+        prev = i;
+        have = 1;
+    }
+    for (size_t k = 0; k < n; k++)
+        if (cnt[k] >= 2 && (!best || cnt[k] > cnt[best - 1]))
+            best = k + 1;
+    return best ? len[best - 1] : 0;
+}
+
+size_t pakon_lc_find_line_px(const uint16_t *s, size_t nsamples, size_t lo,
+                             size_t hi, int ir)
+{
+    size_t nb = PAKON_LC_BLOCKS(ir);
     if (!s || !lo || hi < lo)
         return 0;
-    size_t lines = nsamples / (4 * hi);
+    size_t lines = nsamples / (nb * hi);
     if (lines < 4)
         return 0;
     if (lines > 48)
         lines = 48;
-    double *m = malloc(4 * hi * sizeof *m);
+    double *m = malloc(nb * hi * sizeof *m);
     if (!m)
         return 0;
     double best = -1;
     size_t arg = 0;
     for (size_t px = lo; px <= hi; px++) {
-        size_t L = 4 * px;
+        size_t L = nb * px;
         memset(m, 0, L * sizeof *m);
         for (size_t l = 0; l < lines; l++)
             for (size_t i = 0; i < L; i++)
@@ -86,13 +137,13 @@ size_t pakon_lc_find_line_px(const uint16_t *s, size_t nsamples, size_t lo,
 }
 
 int pakon_lc_stats_range(const uint16_t *s, size_t nsamples, size_t line_px,
-                         size_t origin, size_t px0, size_t px1,
+                         int ir, size_t origin, size_t px0, size_t px1,
                          pakon_lc_stats *out)
 {
     if (!s || !out || px1 <= px0 || px1 > line_px)
         return -1;
     memset(out, 0, sizeof *out);
-    size_t line = 4 * line_px;
+    size_t line = PAKON_LC_BLOCKS(ir) * line_px;
     size_t lines = nsamples > origin ? (nsamples - origin) / line : 0;
     if (!lines)
         return -1;
@@ -103,12 +154,13 @@ int pakon_lc_stats_range(const uint16_t *s, size_t nsamples, size_t line_px,
 
     for (size_t l = 0; l < lines; l++) {
         const uint16_t *rgb = s + origin + l * line;
-        const uint16_t *ir = rgb + 3 * line_px;
+        const uint16_t *irb = ir ? rgb + 3 * line_px : NULL;
         for (size_t p = px0; p < px1; p++) {
             col[0 * npx + (p - px0)] += rgb[3 * p];
             col[1 * npx + (p - px0)] += rgb[3 * p + 1];
             col[2 * npx + (p - px0)] += rgb[3 * p + 2];
-            col[3 * npx + (p - px0)] += ir[p];
+            if (irb)
+                col[3 * npx + (p - px0)] += irb[p];
         }
     }
 
@@ -129,20 +181,21 @@ int pakon_lc_stats_range(const uint16_t *s, size_t nsamples, size_t line_px,
 }
 
 size_t pakon_lc_column_accum(const uint16_t *s, size_t nsamples, size_t line_px,
-                             size_t origin, double *sum, size_t *lines)
+                             int ir, size_t origin, double *sum, size_t *lines)
 {
     if (!s || !sum || !lines || !line_px)
         return 0;
-    size_t line = 4 * line_px;
+    size_t line = PAKON_LC_BLOCKS(ir) * line_px;
     size_t n = nsamples > origin ? (nsamples - origin) / line : 0;
     for (size_t l = 0; l < n; l++) {
         const uint16_t *rgb = s + origin + l * line;
-        const uint16_t *ir = rgb + 3 * line_px;
+        const uint16_t *irb = ir ? rgb + 3 * line_px : NULL;
         for (size_t p = 0; p < line_px; p++) {
             sum[0 * line_px + p] += rgb[3 * p];
             sum[1 * line_px + p] += rgb[3 * p + 1];
             sum[2 * line_px + p] += rgb[3 * p + 2];
-            sum[3 * line_px + p] += ir[p];
+            if (irb)
+                sum[3 * line_px + p] += irb[p];
         }
     }
     *lines += n;

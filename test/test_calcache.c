@@ -43,14 +43,18 @@ int main(void)
         return 1;
     }
     char path[1024];
-    CHECK(pakon_cal_path(path, sizeof path, dir, PAKON_FILM_BW, 8) == 0 &&
-          strstr(path, "/calibration-bw-base8.bin"), "path per film and base");
-    CHECK(pakon_cal_path(path, sizeof path, dir, PAKON_FILM_BW, 12) == -1, "bad base");
-    CHECK(pakon_cal_path(path, sizeof path, dir, PAKON_FILM_BW, 16) == 0 &&
-          strstr(path, "/calibration-bw.bin"), "Base 16 keeps the old name");
+    CHECK(pakon_cal_path(path, sizeof path, dir, PAKON_FILM_BW, 16, 0) == 0 &&
+          strstr(path, "/calibration-bw-noir.bin"), "path: Base 16, IR off");
+    CHECK(pakon_cal_path(path, sizeof path, dir, PAKON_FILM_BW, 4, 0) == 0 &&
+          strstr(path, "/calibration-bw-base4-noir.bin"), "path: Base 4, IR off");
+    CHECK(pakon_cal_path(path, sizeof path, dir, PAKON_FILM_BW, 12, 1) == -1, "bad base");
+    CHECK(pakon_cal_path(path, sizeof path, dir, PAKON_FILM_BW, 16, 1) == 0 &&
+          strstr(path, "/calibration-bw.bin"), "Base 16 + IR keeps the old name");
     char tiny[8];
-    CHECK(pakon_cal_path(tiny, sizeof tiny, dir, PAKON_FILM_BW, 16) == -1,
+    CHECK(pakon_cal_path(tiny, sizeof tiny, dir, PAKON_FILM_BW, 16, 1) == -1,
           "path too long");
+    CHECK(pakon_cal_path(path, sizeof path, dir, PAKON_FILM_BW, 8, 1) == 0 &&
+          strstr(path, "/calibration-bw-base8.bin"), "path per film and base");
 
     enum { LP = 37 };
     pakon_cal_record rec = {
