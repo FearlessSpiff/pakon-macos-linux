@@ -11,6 +11,7 @@
  */
 #include "pakon_lightcal.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -49,16 +50,16 @@ int main(void)
             }
         }
         pakon_lc_stats st;
-        int r = pakon_lc_stats_range(s, n, PX, o, 10, 20, &st);
+        int r = pakon_lc_stats_range(s, n, PX, 1, o, 10, 20, &st);
         CHECK(r == 0 && st.lines == LINES, "whole lines counted");
         CHECK(st.mean[PAKON_LC_R] == 1014.5 && st.peak[PAKON_LC_R] == 1019,
               "R mean and column peak over pixels 10..19");
         CHECK(st.mean[PAKON_LC_G] == 2014.5, "G mean");
         CHECK(st.mean[PAKON_LC_B] == 3002.0, "B mean over lines");
         CHECK(st.mean[PAKON_LC_IR] == 400.0, "IR block follows the RGB block");
-        CHECK(pakon_lc_stats_range(s, n, PX, o, 20, 20, &st) == -1,
+        CHECK(pakon_lc_stats_range(s, n, PX, 1, o, 20, 20, &st) == -1,
               "empty pixel range refused");
-        CHECK(pakon_lc_stats_range(s, 10, PX, o, 0, 5, &st) == -1,
+        CHECK(pakon_lc_stats_range(s, 10, PX, 1, o, 0, 5, &st) == -1,
               "no whole line refused");
         free(s);
     }
@@ -118,7 +119,7 @@ int main(void)
                 s[i] = (uint16_t)(line[(777 + i) % L] + (seed >> 16) % 101);
             }
             size_t got = pakon_lc_find_line_px(s, LINES * L, win[k % 3] * 5 / 8,
-                                               win[k % 3] + 8);
+                                               win[k % 3] + 8, 1);
             snprintf(msg, sizeof msg, "line width %zu found%s (got %zu)", PX,
                      k >= 3 ? ", IR LED only" : "", got);
             CHECK(got == PX, msg);
@@ -126,8 +127,53 @@ int main(void)
             free(line);
         }
         uint16_t few[100] = { 0 };
-        CHECK(pakon_lc_find_line_px(few, 100, 10, 20) == 0,
+        CHECK(pakon_lc_find_line_px(few, 100, 10, 20, 1) == 0,
               "line width: too few lines refused");
+    }
+
+    /* IR off: 3-block lines (RGB triplets only), aligned on the line marker
+     * (bit 0 of the first word of each line, nowhere else; samples are even). */
+    {
+        enum { PX = 1527, LINES = 60, START = 2345 };
+        size_t L = 3 * PX;
+        uint16_t *line = malloc(L * sizeof *line);
+        for (size_t i = 0; i < L; i++) {
+            size_t p = i / 3;
+            line[i] = (uint16_t)((p < 35 ? 300 : 60000 + 40 * (p % 37)) & ~1u);
+        }
+        line[0] |= 1u;
+        uint16_t *s = malloc(LINES * L * sizeof *s);
+        for (size_t i = 0; i < LINES * L; i++)
+            s[i] = line[(START + i) % L];
+        long o = pakon_lc_marker_origin(s, LINES * L, L);
+        snprintf(msg, sizeof msg, "IR off: marker origin %ld (expect %zu)", o, L - START);
+        CHECK(o == (long)(L - START), msg);
+        size_t got = pakon_lc_find_line_px(s, LINES * L, 2036 * 5 / 8, 2036 + 8, 0);
+        snprintf(msg, sizeof msg, "IR off: line width %d found (got %zu)", PX, got);
+        CHECK(got == PX, msg);
+        pakon_lc_stats st;
+        CHECK(pakon_lc_stats_range(s, LINES * L, PX, 0, (size_t)o, 0, 20, &st) == 0 &&
+              st.lines == LINES - 1 && fabs(st.mean[0] - 300) < 0.1 &&
+              st.mean[1] == 300 && st.mean[PAKON_LC_IR] == 0 &&
+              st.peak[PAKON_LC_IR] == 0, "IR off: black pixels, no IR channel");
+        double *sum = calloc(PAKON_LC_NCH * PX, sizeof *sum);
+        size_t lines = 0;
+        CHECK(pakon_lc_column_accum(s, LINES * L, PX, 0, (size_t)o, sum, &lines) ==
+                  LINES - 1 && sum[1 * PX + 100] == (LINES - 1) * (double)line[3 * 100 + 1] &&
+                  sum[3 * PX + 100] == 0, "IR off: column sums, IR row untouched");
+        free(sum);
+        for (size_t i = 0; i < LINES * L; i++)   /* dark: still aligns */
+            s[i] = (uint16_t)(((START + i) % L) == 0 ? 301 : 300);
+        CHECK(pakon_lc_marker_origin(s, LINES * L, L) == (long)(L - START),
+              "IR off: marker origin in the dark");
+        CHECK(pakon_lc_marker_line_len(s, LINES * L) == L,
+              "IR off: line length from the marker, in the dark");
+        for (size_t i = 0; i < LINES * L; i++)
+            s[i] = 300;
+        CHECK(pakon_lc_marker_origin(s, LINES * L, L) == -1 &&
+              pakon_lc_marker_line_len(s, LINES * L) == 0, "no marker: -1 / 0");
+        free(s);
+        free(line);
     }
 
     /* Dark offset. */
@@ -212,14 +258,14 @@ int main(void)
         }
         double *sum = calloc(PAKON_LC_NCH * PX, sizeof *sum);
         size_t lines = 0;
-        size_t a = pakon_lc_column_accum(s, n, PX, 7, sum, &lines);
-        size_t b = pakon_lc_column_accum(s, n, PX, 7, sum, &lines);
+        size_t a = pakon_lc_column_accum(s, n, PX, 1, 7, sum, &lines);
+        size_t b = pakon_lc_column_accum(s, n, PX, 1, 7, sum, &lines);
         CHECK(a == LINES && b == LINES && lines == 2 * LINES,
               "column sums: whole lines only, accumulated over reads");
         CHECK(sum[0 * PX + 4] == 2 * LINES * 104.0, "column sums: R per pixel");
         CHECK(sum[1 * PX + 9] == 2 * (200 + 201 + 202.0), "column sums: G per line");
         CHECK(sum[3 * PX + 29] == 2 * LINES * 79.0, "column sums: IR block");
-        CHECK(pakon_lc_column_accum(s, 10, PX, 7, sum, &lines) == 0 &&
+        CHECK(pakon_lc_column_accum(s, 10, PX, 1, 7, sum, &lines) == 0 &&
               lines == 2 * LINES, "column sums: short read adds nothing");
         free(sum);
         free(s);

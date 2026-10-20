@@ -4,13 +4,17 @@
  * During calibration (motor stopped, bank 0x82 reg 4 = 6, reg 5 = Offset +
  * 2000) a line is line_px = reg5 - reg4 pixels: line_px R,G,B triplets and
  * line_px IR samples, 4 * line_px u16 LE samples in all (8148 on serial
- * 3054). No sample carries the scan-time marker bit, and where a read
- * starts within a line varies from read to read (measured on serial 3054,
- * 2026-10-09), so each read is aligned from its own data:
+ * 3054). With IR off (CCD reg 0 bit 8 clear) there is no IR block: 3 *
+ * line_px samples (6111). Where a read starts within a line varies from
+ * read to read, so each read is aligned from its own data. With IR on,
  * pakon_lc_find_origin looks for the black-to-lit step at the start of the
- * RGB and IR blocks. That needs light in at least one block; the dark-offset
- * loop therefore runs with the IR LED alone, which leaves the RGB black
- * pixels dark (330/301/317 vs 319/316/319 with all LEDs off).
+ * RGB and IR blocks; that needs light in at least one block, so the dark
+ * steps run with the IR LED alone, which leaves the RGB black pixels dark
+ * (330/301/317 vs 319/316/319 with all LEDs off). With IR off,
+ * pakon_lc_marker_origin uses the line marker: bit 0 is set on one word per
+ * line, the first of the RGB block, and on no other sample, lit or dark,
+ * IR on or off (serial 3054, 2026-10-20; the decoder's marker_align takes
+ * the same word as column 0).
  *
  * The first ~22 pixels of each block are optically black; the level then
  * ramps up to the open-gate level by pixel ~37 (= Offset - 6, where
@@ -30,6 +34,9 @@ extern "C" {
 
 enum { PAKON_LC_R = 0, PAKON_LC_G, PAKON_LC_B, PAKON_LC_IR, PAKON_LC_NCH };
 
+/* Blocks per line: RGB triplets (3) plus the IR block when IR is on. */
+#define PAKON_LC_BLOCKS(ir) ((ir) ? 4u : 3u)
+
 #define PAKON_LC_BLACK_PX  20u   /* fully black pixels at the start of a block
                                     (Base 16; scaled with the line at Base 8 / 4) */
 
@@ -44,8 +51,23 @@ long pakon_lc_find_origin(const uint16_t *s, size_t nsamples, size_t line_px,
                           size_t black_px, double min_contrast);
 
 /*
- * Line width (pixels; a line is 4 * line_px samples) of a stream of identical
- * lines, as on the open gate with the motor stopped: the width in [lo, hi]
+ * Line origin from the line marker (bit 0 set on the first word of each
+ * line): the phase, 0 <= origin < `line_len` samples, where the bit is set on
+ * at least 60% of the whole lines in `s`. Works lit or dark. Returns -1 with
+ * fewer than 2 lines or no such phase.
+ */
+long pakon_lc_marker_origin(const uint16_t *s, size_t nsamples, size_t line_len);
+
+/*
+ * Line length in samples from the line marker: the most common distance
+ * between consecutive marked words (at least twice). Works lit or dark.
+ * Returns 0 if there is none.
+ */
+size_t pakon_lc_marker_line_len(const uint16_t *s, size_t nsamples);
+
+/*
+ * Line width (pixels; a line is PAKON_LC_BLOCKS(ir) * line_px samples) of a
+ * stream of identical lines, as on the open gate with the motor stopped: the width in [lo, hi]
  * whose mean over up to 48 lines has the largest variance. At a wrong width
  * each line slides against the last and the mean blurs. Does not need the
  * read to start on a line. Returns 0 if fewer than 4 lines of `hi` fit.
@@ -55,7 +77,7 @@ long pakon_lc_find_origin(const uint16_t *s, size_t nsamples, size_t line_px,
  * F-135 does it is not yet measured.
  */
 size_t pakon_lc_find_line_px(const uint16_t *s, size_t nsamples, size_t lo,
-                             size_t hi);
+                             size_t hi, int ir);
 
 typedef struct {
     size_t   lines;                  /* whole lines used */
@@ -65,23 +87,24 @@ typedef struct {
 
 /*
  * Statistics over pixels [px0, px1) of every whole line from `origin` (RGB
- * block, then the next IR block). Returns 0 on success, -1 if the range is
- * empty or no whole line fits.
+ * block, then the next IR block when `ir`; with IR off the IR mean and peak
+ * are 0). Returns 0 on success, -1 if the range is empty or no whole line
+ * fits.
  */
 int pakon_lc_stats_range(const uint16_t *s, size_t nsamples, size_t line_px,
-                         size_t origin, size_t px0, size_t px1,
+                         int ir, size_t origin, size_t px0, size_t px1,
                          pakon_lc_stats *out);
 
 /*
  * Per-column sums for the fixed-pattern tables (TLB.dll FUN_1001f550): adds
  * every pixel of every whole line from `origin` to `sum`, laid out
  * [channel][pixel] (PAKON_LC_NCH * line_px doubles, RGB block then the IR
- * block), and adds the number of lines to *lines. Call once per read to
- * build up 128+ lines over several reads. Returns the lines added (0 if no
- * whole line fits).
+ * block; the IR row is left alone when IR is off), and adds the number of
+ * lines to *lines. Call once per read to build up 128+ lines over several
+ * reads. Returns the lines added (0 if no whole line fits).
  */
 size_t pakon_lc_column_accum(const uint16_t *s, size_t nsamples, size_t line_px,
-                             size_t origin, double *sum, size_t *lines);
+                             int ir, size_t origin, double *sum, size_t *lines);
 
 /*
  * Flat-field gain for one column (TLB.dll FUN_1001f550, as means instead of

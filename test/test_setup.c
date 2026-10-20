@@ -345,13 +345,20 @@ int main(int argc, char **argv)
     CHECK(pakon_setup_mode(0, 4, 1, 21, &m) == PAKON_OK && m.trigger == 64 &&
           m.integration == 0x060D && m.dual_tap && !m.low89 &&
           m.pixel_start == 3 && m.pixel_end == 21 + 1000, "F-135 Base 4 + IR mode");
+    /* F-135 IR off: TLB.dll integration, predicted triggers. */
+    CHECK(pakon_setup_mode(0, 16, 0, 43, &m) == PAKON_OK && m.trigger == 24 &&
+          m.integration == 0x0FF0 && !m.ir && !m.dual_tap && !m.low89 &&
+          m.pixel_start == 6 && m.pixel_end == 43 + 2000, "F-135 Base 16 mode");
+    CHECK(pakon_setup_mode(0, 8, 0, 42, &m) == PAKON_OK && m.trigger == 38 &&
+          m.integration == 0x0D9D && !m.ir && m.low89 == 1, "F-135 Base 8 mode");
+    CHECK(pakon_setup_mode(0, 4, 0, 21, &m) == PAKON_OK && m.trigger == 85 &&
+          m.integration == 0x0913 && !m.ir && m.dual_tap, "F-135 Base 4 mode");
     {
         pakon_scan_mode keep = m;
-        CHECK(pakon_setup_mode(0, 16, 0, 43, &m) == PAKON_ERR_PARAM &&
-              pakon_setup_mode(1, 16, 1, 60, &m) == PAKON_ERR_PARAM &&
+        CHECK(pakon_setup_mode(1, 16, 1, 60, &m) == PAKON_ERR_PARAM &&
               pakon_setup_mode(0, 12, 1, 43, &m) == PAKON_ERR_PARAM &&
               !memcmp(&keep, &m, sizeof m),
-              "unknown modes refused (F-135 IR off, F-135+ Base 16 + IR, Base 12)");
+              "unknown modes refused (F-135+ Base 16 + IR, Base 12)");
     }
     CHECK(pakon_setup_led_period(0x0C1A) == 0x742 &&
           pakon_setup_led_period(0x0913) == 1393 &&

@@ -16,8 +16,8 @@
  *
  * The OEM keeps the record in the registry, so it outlives the program. We
  * keep it in a file next to the EEPROM archive, one per film type (the duty
- * caps depend on the film-base densities) and resolution base (each base has
- * its own integration time, LED period and calibration line).
+ * caps depend on the film-base densities), resolution base and IR on / off
+ * (each has its own integration time, LED period and calibration line).
  */
 #ifndef PAKON_CALCACHE_H
 #define PAKON_CALCACHE_H
@@ -63,11 +63,12 @@ typedef struct {
     double    *dark, *bright;
 } pakon_cal_record;
 
-/* `dir`/calibration-<film>.bin at Base 16 (the name it has always had),
- * `dir`/calibration-<film>-base<N>.bin at Base 8 / 4. Returns 0, or -1 for
- * another base or if it does not fit. */
+/* `dir`/calibration-<film>.bin at Base 16 + IR (the name it has always had),
+ * `dir`/calibration-<film>-base<N>.bin at Base 8 / 4, with "-noir" before
+ * ".bin" when IR is off. Returns 0, or -1 for another base or if it does not
+ * fit. */
 int pakon_cal_path(char *buf, size_t size, const char *dir, pakon_film film,
-                   int base);
+                   int base, int ir);
 
 /* Write the record (tables required). Returns 0 on success. */
 int pakon_cal_save(const char *path, const pakon_cal_record *rec);

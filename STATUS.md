@@ -316,8 +316,36 @@ F-135+ Base 16). The `0x91` value is inferred (2026-10-09), not yet tested:
   Stop button (SIGINT =
   end of roll in the image loop, then the normal teardown).
 - Also seen: with stdout redirected to a file the progress lines are
-  block-buffered (the "feed the film" line is flushed, the rest lags), and
-  the `--scan-code` image loop does not catch Ctrl-C.
+  block-buffered (the "feed the film" line is flushed, the rest lags). (The
+  `--scan-code` image loop now catches Ctrl-C.)
+
+**IR off (F-135; branch `feat/bw-ir-off`, 2026-10-20).** `--ir on|off`;
+`--scan-code --film bw` defaults to off (silver blocks IR, so the dust
+channel is empty), so B&W from the web app scans without IR. Integration
+`0xFF0` / `0xD9D` / `0x913` (`TLB.dll`), triggers 24 / 38 / 85 (same rule as
+above), the EEPROM's IR-off motor speed and adjust (serial 3054: 2365 /
+3689 / 8302 vs 1557 / 2767 / 6224 with IR, 1.52x / 1.33x / 1.33x faster).
+- With IR off (CCD reg 0 bit 8 clear) a line is 3 x line_px samples, no IR
+  block (6111 at Base 16; probe, open gate).
+- The line marker (bit 0 of the first RGB word, set on no other sample) is
+  present in calibration reads too, lit or dark, IR on or off. IR-off
+  calibration aligns on it, runs the dark steps with every LED off (as the
+  OEM does; the dark tables are true dark tables now), takes the Base 8
+  line width from the marker spacing (1527 px, as measured with light), and
+  calibrates R/G/B only (IR LED current 0; IR-off ceiling R 6 G 8 B 8 IR 0).
+  IR on is unchanged.
+- Hardware: `--light-cal --ir off` passes at Base 16 / 8 / 4 (10-12 s); a
+  Base 16 + IR run afterwards matches earlier ones. A Base 8 B&W half-frame
+  strip scanned with IR off: 4500-sample rows, 0 errors, stopped on its own,
+  8 half frames, leads -6/-12, frame pitch -1.1% of the OEM's (IR-on B&W
+  Base 8: -1.2%), so trigger 38 looks right. Base 16 B&W (cactus strip)
+  with IR off: 6000-sample rows, 0 errors, stopped on its own, 6 frames,
+  leads -8/-16; the strip spans 18987 rows vs 18999 for the same strip with
+  IR on (order 000002), pitch -1.22% vs -1.07%, so trigger 24 is right and
+  the 1.52x transport speed buys the same rows per frame. Base 4 B&W
+  (same strip) with IR off: 3000-sample rows, 0 errors, stopped on its
+  own, 6 frames, leads -4/-8; 9489 rows vs 9481 with IR on, pitch -1.19%
+  vs -1.29%, so trigger 85 is right. All three IR-off modes checked.
 
 **Film type.** Scan side: the scan LED duties are the calibrated duties ×
 10^density, with `TLB.dll`'s film-base densities (R/G/B/IR): colour negative

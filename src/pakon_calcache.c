@@ -36,16 +36,15 @@ pakon_cal_action pakon_cal_needed(int64_t now, int64_t when, int64_t when_full)
 }
 
 int pakon_cal_path(char *buf, size_t size, const char *dir, pakon_film film,
-                   int base)
+                   int base, int ir)
 {
-    int n;
-    if (base == 16)
-        n = snprintf(buf, size, "%s/calibration-%s.bin", dir, pakon_film_name(film));
-    else if (base == 8 || base == 4)
-        n = snprintf(buf, size, "%s/calibration-%s-base%d.bin", dir,
-                     pakon_film_name(film), base);
-    else
+    char base_part[16] = "";
+    if (base == 8 || base == 4)
+        snprintf(base_part, sizeof base_part, "-base%d", base);
+    else if (base != 16)
         return -1;
+    int n = snprintf(buf, size, "%s/calibration-%s%s%s.bin", dir,
+                     pakon_film_name(film), base_part, ir ? "" : "-noir");
     return n < 0 || (size_t)n >= size ? -1 : 0;
 }
 

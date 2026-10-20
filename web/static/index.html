@@ -1113,9 +1113,11 @@
     setBusy('scan', true);
     setMsg($('scan-msg'), 'Starting…');
     $('scan-prog-wrap').classList.add('show');
-    // A roll's raw shrinks with the pixel count: 56% at Base 8, 25% at Base 4.
+    // A roll's raw shrinks with the pixel count: 56% at Base 8, 25% at Base 4,
+    // and by a quarter for B&W, which scans without the IR channel.
     const base = Number($('scan-base').value);
-    $('scan-prog').max = Math.round(2200 * { 16: 1, 8: 0.5625, 4: 0.25 }[base]);
+    $('scan-prog').max = Math.round(2200 * { 16: 1, 8: 0.5625, 4: 0.25 }[base] *
+                                    ($('scan-film').value === 'bw' ? 0.75 : 1));
     $('scan-prog').value = 0;
     $('scan-log').textContent = '';
     $('feed-prompt').classList.remove('show');
