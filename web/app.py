@@ -12,8 +12,10 @@ Endpoints
 ---------
 GET  /api/status                  scanner state + current job info
 POST /api/firmware                SSE — load firmware (cold device)
-POST /api/scan                    SSE — run a scan (a new order in the work folder; film c41|bw|slide)
+POST /api/scan                    SSE — run a scan (a new order in the work folder; film c41|bw|slide,
+                                  base 16|8|4)
 POST /api/workdir                 set the work folder scans go into
+POST /api/scan/stop               end the running scan now (the operator's end of roll)
 POST /api/eject                   SSE — run the film out of the transport
 POST /api/open                    pick a .raw on the host (keeps its crops)
 POST /api/process                 SSE — decode the opened .raw or the last scan (film c41|bw|slide)
@@ -30,6 +32,7 @@ import asyncio
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -71,6 +74,10 @@ PAKSCAN_F135     = _RES / "36frames.pakscan"
 PAKSCAN_F135PLUS = _RES / "f135plus" / "base16.pakscan"
 PAKSCAN_OVERRIDE = os.environ.get("PAKON_PAKSCAN")
 
+# Resolutions (pakon_replay --scan-code --base): 2000 x 3000, 1500 x 2250 and
+# 1000 x 1500 px per frame. The replayed scans are Base 16 only.
+SCAN_BASES = (16, 8, 4)
+
 # ── App & state ───────────────────────────────────────────────────────────────
 
 app = FastAPI(title="Pakon Scanner")
@@ -81,6 +88,8 @@ _state: dict = {
     "frames": [],        # list of {"index", "tiff", "thumb"} (after export)
     "prescan": None,     # prescan() metadata (ribbon path, base, pitch, centres…)
     "processing": False,
+    "scan_proc": None,   # the running scan's pakon_replay process (Stop button)
+    "scan_stop": False,  # Stop was pressed for it
 }
 
 
@@ -275,20 +284,25 @@ async def _detect_model() -> str | None:
 # Lines of `pakon_replay --scan-code` worth showing, and the one that means
 # "the motor runs, feed the film".
 _SCAN_LOG_KEYS = ("calibration:", "calibrated:", "film detected", "end-of-roll", "stream ended",
+                  "stop requested",
                   "no film fed", "safety cap", "event service:", "scan-code:",
                   "teardown", "failed", "did not converge", "insufficient", "] dx:")
 _FEED_KEY = "feed the film now"
 
 
-async def _run_streaming(args: list[str], out_path: Path | None, keys=None):
+async def _run_streaming(args: list[str], out_path: Path | None, keys=None,
+                         scan: bool = False):
     """Run pakon_replay with `args`, yielding SSE events: selected output lines
     as 'log', the feed prompt as 'feed', and the image size as 'progress'
-    every 0.5 s when `out_path` is given. Ends with the exit code."""
+    every 0.5 s when `out_path` is given. Ends with the exit code. A `scan`
+    can be ended with the Stop button (POST /api/scan/stop)."""
     proc = await asyncio.create_subprocess_exec(
         str(REPLAY_BIN), *args,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
     )
+    if scan:
+        _state["scan_proc"], _state["scan_stop"] = proc, False
     lines: asyncio.Queue = asyncio.Queue()
 
     async def _reader():
@@ -319,10 +333,12 @@ async def _run_streaming(args: list[str], out_path: Path | None, keys=None):
                    "mb": round(size / 1_048_576, 1)}
         if done:
             break
+    if scan:
+        _state["scan_proc"] = None
     yield {"type": "exit", "code": proc.returncode}
 
 
-async def _scan_stream(film: str):
+async def _scan_stream(film: str, base: int = 16):
     if not REPLAY_BIN.exists():
         yield _sse({"type": "error",
                     "message": f"pakon_replay binary not found: {REPLAY_BIN}"})
@@ -336,8 +352,14 @@ async def _scan_stream(film: str):
         yield _sse({"type": "log", "message": "Detecting scanner model..."})
         model = await _detect_model()
     if model == "F-135" and eeprom_dir is not None:
-        async for ev in _scan_code_stream(eeprom_dir, film):
+        async for ev in _scan_code_stream(eeprom_dir, film, base):
             yield ev
+        return
+    if base != 16:
+        yield _sse({"type": "error",
+                    "message": f"Base {base} needs the scan built in code (F-135 "
+                               "with an EEPROM archive); the replayed scan is "
+                               "Base 16 only"})
         return
     if film != "c41":
         yield _sse({"type": "log",
@@ -382,6 +404,7 @@ async def _scan_stream(film: str):
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
+    _state["scan_proc"], _state["scan_stop"] = proc, False
 
     while True:
         done = False
@@ -396,6 +419,7 @@ async def _scan_stream(film: str):
         yield _sse({"type": "progress", "bytes": size, "mb": mb})
         if done:
             break
+    _state["scan_proc"] = None
 
     size = out_path.stat().st_size if out_path.exists() else 0
     mb = round(size / 1_048_576, 1)
@@ -403,6 +427,12 @@ async def _scan_stream(film: str):
         _save_film(out_path, film)
         yield _sse({"type": "done", "bytes": size, "mb": mb, "path": str(out_path),
                     "film": film, "dx": dx.for_raw(out_path)})
+    elif _state["scan_stop"]:
+        # The replayed scan reports a stop as a failure on purpose (a partial
+        # raw); the motor is stopped and the teardown sent.
+        yield _sse({"type": "error",
+                    "message": f"scan stopped before the end of the replayed "
+                               f"script ({mb} MB kept, not processed)"})
     else:
         yield _sse({"type": "error",
                     "message": f"scan failed (exit {proc.returncode})"})
@@ -419,7 +449,7 @@ def _prepare_out() -> tuple[Path | None, str | None]:
     return out_path, None
 
 
-async def _scan_code_stream(eeprom_dir: Path, film: str):
+async def _scan_code_stream(eeprom_dir: Path, film: str, base: int = 16):
     """F-135 scan with nothing replayed: setup, light calibration (open gate,
     keep the film out; reused for an hour like the OEM software, see
     include/pakon_calcache.h), motor start, then the operator feeds the film."""
@@ -430,14 +460,14 @@ async def _scan_code_stream(eeprom_dir: Path, film: str):
     yield _sse({"type": "order", "path": str(out_path),
                 "order": out_path.parent.name})
     yield _sse({"type": "log",
-                "message": f"Model: F-135 — scan built in code (EEPROM "
-                           f"{eeprom_dir.name}). Keep the film out until the "
-                           f"motor starts."})
+                "message": f"Model: F-135 — scan built in code, Base {base} "
+                           f"(EEPROM {eeprom_dir.name}). Keep the film out until "
+                           f"the motor starts."})
     code = 1
     async for ev in _run_streaming(
             ["--scan-code", "--eeprom-dir", str(eeprom_dir), "--image", str(out_path),
-             "--film", film],
-            out_path, _SCAN_LOG_KEYS):
+             "--film", film, "--base", str(base)],
+            out_path, _SCAN_LOG_KEYS, scan=True):
         if ev["type"] == "exit":
             code = ev["code"]
         else:
@@ -448,6 +478,9 @@ async def _scan_code_stream(eeprom_dir: Path, film: str):
         _save_film(out_path, film)
         yield _sse({"type": "done", "bytes": size, "mb": mb, "path": str(out_path),
                     "film": film, "dx": dx.for_raw(out_path)})
+    elif _state["scan_stop"]:
+        yield _sse({"type": "error",
+                    "message": "scan stopped before any film went through"})
     else:
         yield _sse({"type": "error",
                     "message": f"scan failed (exit {code}) — see the log"})
@@ -492,6 +525,19 @@ async def _eject_stream():
         yield _sse({"type": "error", "message": f"eject failed (exit {code})"})
 
 
+@app.post("/api/scan/stop")
+async def api_scan_stop():
+    """End the running scan as if the end of the roll were seen: pakon_replay
+    leaves the image loop and tears down (the motor stops) as it does at the
+    end of a roll. For a strip the white detection misses."""
+    proc = _state["scan_proc"]
+    if proc is None or proc.returncode is not None:
+        return JSONResponse({"error": "no scan is running"}, status_code=409)
+    _state["scan_stop"] = True
+    proc.send_signal(signal.SIGINT)
+    return {"ok": True}
+
+
 @app.post("/api/eject")
 async def api_eject():
     return StreamingResponse(_reported(_eject_stream(), "eject", "scan"),
@@ -500,10 +546,13 @@ async def api_eject():
 
 
 @app.post("/api/scan")
-async def api_scan(film: str = Body("c41", embed=True)):
+async def api_scan(film: str = Body("c41", embed=True), base: int = Body(16, embed=True)):
     if film not in FILMS:
         return JSONResponse({"error": f"unknown film type: {film}"}, status_code=400)
-    return StreamingResponse(_reported(_scan_stream(film), "scan", "scan", film=film),
+    if base not in SCAN_BASES:
+        return JSONResponse({"error": f"unknown resolution: Base {base}"}, status_code=400)
+    return StreamingResponse(_reported(_scan_stream(film, base), "scan", "scan",
+                                       film=film, base=base),
                              media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 

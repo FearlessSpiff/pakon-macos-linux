@@ -235,6 +235,7 @@
     .scan-table td + td, .scan-table th + th { border-left: 2px solid var(--border); }
     .scan-table .col-order { width: 9.5em; }
     .scan-table .col-film { width: 190px; }
+    .scan-table .col-res { width: 250px; }
     .scan-table select { width: 100%; }
     .scan-table .col-act { width: 262px; }      /* Scan + Advance film buttons + gap + padding + shadow */
     /* narrow: one labelled row per cell instead of three squeezed columns */
@@ -605,7 +606,7 @@
   <h2>Scan</h2>
   <table class="scan-table">
     <thead>
-      <tr><th>Work folder</th><th class="col-order">Next order</th><th class="col-film">Film type</th><th class="col-act">Film</th></tr>
+      <tr><th>Work folder</th><th class="col-order">Next order</th><th class="col-film">Film type</th><th class="col-res">Resolution</th><th class="col-act">Film</th></tr>
     </thead>
     <tbody>
       <tr>
@@ -624,10 +625,19 @@
             <option value="slide">Slide (E-6)</option>
           </select>
         </td>
+        <td data-label="Resolution">
+          <select id="scan-base" aria-label="Resolution">
+            <option value="16">Base 16 · 2000 × 3000</option>
+            <option value="8">Base 8 · 1500 × 2250</option>
+            <option value="4">Base 4 · 1000 × 1500</option>
+          </select>
+        </td>
         <td data-label="Film">
           <div class="act-cell">
             <button id="scan-btn">Scan</button>
             <button class="ghost" id="eject-btn">Advance film</button>
+            <button class="ghost hidden" id="stop-btn"
+                    title="End the roll now: stop the motor and keep what was scanned">Stop</button>
           </div>
         </td>
       </tr>
@@ -836,7 +846,7 @@
     <summary>What's sent?</summary>
     <ul>
       <li>Crash reports: the error, and for a failed scan the scanner's last log lines.</li>
-      <li>Usage: pages opened, how long scans, processing and exports take, film type, frame count.</li>
+      <li>Usage: pages opened, how long scans, processing and exports take, film type, scan resolution, frame count.</li>
       <li>Never: photos, file or folder names, your scanner's serial number. Reports carry a random ID.</li>
     </ul>
   </details>
@@ -1095,13 +1105,21 @@
     const btn = $('scan-btn');
     btn.disabled = true;
     $('eject-btn').disabled = true;
+    // While the scan runs, Stop takes Advance film's place.
+    $('eject-btn').classList.add('hidden');
+    $('stop-btn').classList.remove('hidden');
+    $('stop-btn').disabled = false;
+    $('stop-btn').textContent = 'Stop';
     setBusy('scan', true);
     setMsg($('scan-msg'), 'Starting…');
     $('scan-prog-wrap').classList.add('show');
+    // A roll's raw shrinks with the pixel count: 56% at Base 8, 25% at Base 4.
+    const base = Number($('scan-base').value);
+    $('scan-prog').max = Math.round(2200 * { 16: 1, 8: 0.5625, 4: 0.25 }[base]);
     $('scan-prog').value = 0;
     $('scan-log').textContent = '';
     $('feed-prompt').classList.remove('show');
-    await postSSE('/api/scan', { film: $('scan-film').value }, ev => {
+    await postSSE('/api/scan', { film: $('scan-film').value, base }, ev => {
       if (ev.type === 'order') {
         logLine('scan-log', `Order ${ev.order}: ${ev.path}`);
       } else if (ev.type === 'log') {
@@ -1130,9 +1148,27 @@
     });
 
     $('feed-prompt').classList.remove('show');
+    $('stop-btn').classList.add('hidden');
+    $('eject-btn').classList.remove('hidden');
     btn.disabled = false;
     $('eject-btn').disabled = false;
     setBusy('scan', false);
+  });
+
+  // ── Stop: end the roll now (for a strip the end-of-roll check misses) ──
+  $('stop-btn').addEventListener('click', async () => {
+    $('stop-btn').disabled = true;
+    $('stop-btn').textContent = 'Stopping…';
+    logLine('scan-log', 'Stop pressed — ending the roll and stopping the motor');
+    try {
+      const r = await fetch('/api/scan/stop', { method: 'POST' });
+      if (!r.ok) {
+        const d = await r.json().catch(() => ({}));
+        logLine('scan-log', `Stop: ${d.error || r.status}`);
+      }
+    } catch (e) {
+      logLine('scan-log', `Stop failed: ${e}`);
+    }
   });
 
   // ── Advance film (runs the film out of the transport) ─────────────────
@@ -1231,6 +1267,11 @@
   try { $('scan-film').value = localStorage.getItem('pakon-scan-film') || 'c41'; } catch {}
   $('scan-film').addEventListener('change', () => {
     try { localStorage.setItem('pakon-scan-film', $('scan-film').value); } catch {}
+  });
+  try { $('scan-base').value = localStorage.getItem('pakon-scan-base') || '16'; } catch {}
+  if (!$('scan-base').value) $('scan-base').value = '16';
+  $('scan-base').addEventListener('change', () => {
+    try { localStorage.setItem('pakon-scan-base', $('scan-base').value); } catch {}
   });
   $('proc-film').addEventListener('change', () => {
     if ($('raw-slot').classList.contains('set')) processRaw();
