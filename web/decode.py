@@ -205,7 +205,7 @@ def _build_ribbon(raw_path, emit):
     chans = {"r": img[:, 0:nvis:3], "g": img[:, 1:nvis:3], "b": img[:, 2:nvis:3]}
 
     emit("Registering channels", 0.30)
-    leads, _ = validated_leads(measure_leads(chans, 0, width))
+    leads, _ = validated_leads(measure_leads(chans, 0, width), width)
     rgb = register_zones(chans, [(0, width)], [leads],
                          correct_seam=False, zone_perms=[None])
 

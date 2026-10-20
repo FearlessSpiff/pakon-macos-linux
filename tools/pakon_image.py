@@ -23,8 +23,9 @@ The captured 0x86 image stream (pakon_replay --scan output) is, on this F-135:
 The sensor is **trilinear** (separate R/G/B lines spaced along the scan
 direction), so the three channels are offset by a few scan lines and show
 colour ghosting at edges if naively combined. By default it **co-registers**
-them (auto-measured; the lines are spaced ~8 scan lines apart, so green leads
-red by ~8 and blue by ~16 on this F-135); `--no-register` disables it,
+them (auto-measured; the lines are spaced ~8 scan lines apart at Base 16, so
+green leads red by ~8 and blue by ~16 on this F-135; 6/12 at Base 8 and 4/8 at
+Base 4, where each line covers more film); `--no-register` disables it,
 `--reg-leads G,B` forces the offsets.
 
 Frames are placed with the OEM (TLX) framing on the whole ribbon: a fixed
@@ -687,11 +688,16 @@ def _vlead(ch, ref, rng=40, rowstep=1, colstep=3):
     """Vertical 'lead' of channel `ch` over `ref` in scan lines: the dy that
     maximizes corr(ch[row], ref[row+dy]). On this F-135 the sensor is trilinear
     (separate R/G/B lines along the scan), so a feature at ref row y appears in
-    `ch` at row y-dy. Measured on a central detail band, subsampled for speed."""
+    `ch` at row y-dy. Measured on a central detail band, subsampled for speed.
+
+    Correlates the vertical log gradients (edges), not the levels: the levels
+    are dominated by slow brightness changes that blur the peak, which put
+    an F-135 Base 4 scan one line short (-3/-7 for the true -4/-8); Base 16
+    rolls measure the same either way."""
     n = ch.shape[0]
     a, b = int(n * 0.35), int(n * 0.65)
-    A = ch[a:b:rowstep, ::colstep].astype(np.float32)
-    Rf = ref[a:b:rowstep, ::colstep].astype(np.float32)
+    A = np.diff(np.log(ch[a:b:rowstep, ::colstep].astype(np.float32) + 50), axis=0)
+    Rf = np.diff(np.log(ref[a:b:rowstep, ::colstep].astype(np.float32) + 50), axis=0)
     rng = min(rng, A.shape[0] // 4)
     base = A[rng:-rng]
     best = (0, -2.0)
@@ -726,17 +732,29 @@ def measure_leads(chans, c0, c1, perm=None):
 # bound for the auto-measured leads — the cross-correlation returns 0 (or junk)
 # on a low-detail band, e.g. when a frame gap lands in the centre, which leaves
 # the channels unregistered and the frame ghosted (this happened on neg4).
+# These are Base 16 (2000 px) values. A lower base advances the film further
+# per scan line (line pitch x4/3 at Base 8, x2 at Base 4), so the same sensor
+# spacing is fewer lines: 6/12 at Base 8, 4/8 at Base 4 (measured -3.98 /
+# -7.98 on an F-135 Base 4 scan, 2026-10-20).
 _TRILINEAR_LEADS = {"r": 0, "g": -8, "b": -16}
 
 
-def validated_leads(measured):
+def trilinear_leads(width=2000):
+    """The fixed trilinear leads for a line `width` (2000 / 1500 / 1000 px at
+    Base 16 / 8 / 4): the Base 16 spacing scaled with the width."""
+    s = width / 2000
+    return {c: int(round(v * s)) for c, v in _TRILINEAR_LEADS.items()}
+
+
+def validated_leads(measured, width=2000):
     """Accept auto-measured trilinear leads only if they're physically plausible
-    (close to the fixed spacing); otherwise fall back to the constant. Returns
-    (leads, measured_ok)."""
+    (close to the fixed spacing for the line `width`); otherwise fall back to
+    that spacing. Returns (leads, measured_ok)."""
     g, b = measured["g"], measured["b"]
-    if -13 <= g <= -3 and -22 <= b <= -9:
+    s = width / 2000
+    if -13 * s <= g <= -3 * s and -22 * s <= b <= -9 * s:
         return {"r": 0, "g": g, "b": b}, True
-    return dict(_TRILINEAR_LEADS), False
+    return trilinear_leads(width), False
 
 
 def register_zones(chans, zones, leads_per_zone, correct_seam=False, zone_perms=None):
@@ -1195,7 +1213,7 @@ def main():
             print(f"register: forced trilinear leads R=0 G={g} B={b}")
         else:
             measured = measure_leads(chans, 0, width, perm=zone_perms[0])
-            leads, ok = validated_leads(measured)
+            leads, ok = validated_leads(measured, width)
             if ok:
                 print(f"register: trilinear leads R=0 G={leads['g']} B={leads['b']}")
             else:
