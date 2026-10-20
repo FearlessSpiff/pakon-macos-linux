@@ -80,9 +80,12 @@ void pakon_seq_init(pakon_seq *seq);
  * then overrides only the integration times, so the rest carries over.
  *
  * F-135+: the four captured modes (Base 16 / 8 / 4, Base 4 + IR).
- * F-135: IR on only. Integration 0xC1A / 0x913 / 0x60D at Base 16 / 8 / 4
- * (TLB.dll). Trigger 0x10 at Base 16 is captured; 28 at Base 8 and 64 at
- * Base 4 are predicted (STATUS.md, "Resolution"), not yet tested.
+ * F-135, IR on: integration 0xC1A / 0x913 / 0x60D at Base 16 / 8 / 4
+ * (TLB.dll); trigger 0x10 at Base 16 captured, 28 / 64 predicted and checked
+ * on hardware (frame pitch within 1% of the OEM 3:2 pitch, 2026-10-20).
+ * F-135, IR off: integration 0xFF0 / 0xD9D / 0x913 (TLB.dll); triggers
+ * 24 / 38 / 85 predicted by the same rule (STATUS.md, "Resolution"), not yet
+ * run; no F-135 IR-off capture exists.
  *
  * Returns PAKON_ERR_PARAM (mode untouched) for any other combination.
  */

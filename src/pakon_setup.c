@@ -121,17 +121,15 @@ pakon_result pakon_setup_mode(int plus, int base, int ir, uint16_t eeprom_offset
             return PAKON_ERR_PARAM;
         }
     } else {
-        if (!ir)
-            return PAKON_ERR_PARAM;
         if (base == 16) {
-            m.trigger = 0x0010;
-            m.integration = 0x0C1A;
+            m.trigger = ir ? 0x0010 : 24;
+            m.integration = ir ? 0x0C1A : 0x0FF0;
         } else if (base == 8) {
-            m.trigger = 28;
-            m.integration = 0x0913;
+            m.trigger = ir ? 28 : 38;
+            m.integration = ir ? 0x0913 : 0x0D9D;
         } else if (base == 4) {
-            m.trigger = 64;
-            m.integration = 0x060D;
+            m.trigger = ir ? 64 : 85;
+            m.integration = ir ? 0x060D : 0x0913;
         } else {
             return PAKON_ERR_PARAM;
         }
