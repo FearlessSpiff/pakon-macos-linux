@@ -26,8 +26,8 @@ interoperability (see `docs/PROTOCOL.md` → PROVENANCE).
 > [Roadmap](#roadmap) for what's next.
 >
 > The decoder marker-aligns each row, registers the trilinear R/G/B lines,
-> applies the OEM's per-column flat field from the light calibration,
-> autocrops, and detects frames by autocorrelation. It also reproduces the OEM colour:
+> applies the OEM's per-column flat field from the light calibration, and
+> detects frames with the OEM (TLX) framing. It also reproduces the OEM colour:
 > the recovered **C-41 inversion** (a log-density ColNeg LUT) for a faithful
 > positive, and the Kodak **`rpd.pf`** rendering profile for the vibrant JPEG
 > look (see `docs/IMAGING.md`). The web UI is a **minilab-style two-stage
@@ -252,7 +252,6 @@ Key decoder options:
 | `--channel-order {fixed,auto,brg}` | fixed | R/G/B identity after marker alignment (fixed is verified) |
 | `--flat FILE` / `--no-flat` | auto | per-column flat field; default `RAW.flat.json`, else `EEPROM_DIR/flatfield.json` |
 | `--register` / `--no-register` | on | co-register the trilinear R/G/B sensor lines |
-| `--autocrop` / `--no-autocrop` | on | strip leader / blank pre-load scan / gate margin; dense negatives (frames under ~6% of full scale) can be cut as leader, use `--no-autocrop` |
 | `-o PREFIX` | `frame` | output filename prefix |
 
 ### Flat field

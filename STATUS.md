@@ -260,8 +260,7 @@ NegMatrix then grey.
   (0.25·I on all three units known; the factory value is used without an
   EEPROM archive) → `ColRevLut1.pf`, a lut16 device link "Pakon CMY to
   ROMM12", evaluated from the tag → `romm.pf` → sRGB. No scene balance (the
-  OEM runs Ansel in a positive mode, not modelled). `autocrop` keeps dark
-  rows for slides, because the gaps between frames are black. Needs a strip
+  OEM runs Ansel in a positive mode, not modelled). Needs a strip
   of slide film: check the colour against a lightbox, and that
   overexposed (near-clear) frames don't trip end-of-roll white.
   First strip scanned 2026-10-14 (serial 3054): whole strip, 0 errors,

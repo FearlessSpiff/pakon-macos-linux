@@ -27,12 +27,10 @@ them (auto-measured; the lines are spaced ~8 scan lines apart, so green leads
 red by ~8 and blue by ~16 on this F-135); `--no-register` disables it,
 `--reg-leads G,B` forces the offsets.
 
-By default it **autocrops** the ribbon: a real scan begins with a dark leader
-and often a blank stretch (light through no film, before the strip is loaded),
-ends with another blank tail, and carries a uniform gate margin on one side.
-`autocrop` drops those (leader = dark rows; blank = bright *and* colour-neutral
-rows; margin = low-detail columns) and keeps the film. Pass `--no-autocrop` for
-the full raw ribbon.
+Frames are placed with the OEM (TLX) framing on the whole ribbon: a fixed
+picture length and pitch per resolution, each crop anchored at its picture's
+start and spanning the full sensor width. The dark leader and the blank scan
+before and after the strip never become pictures, so nothing is trimmed first.
 
 Structural bright bands (scanner artifacts — persistent bright column ranges
 with low variation, e.g. scan-mode light artifacts) are automatically detected
@@ -801,72 +799,6 @@ def write_tiff(rgb16, path, resize=None):
         os.unlink(tmp)
 
 
-def _all_runs(mask, min_len=1):
-    """Return list of (start, end) inclusive for all True runs in mask,
-    filtered to minimum length min_len, sorted by length descending."""
-    idx = np.where(mask)[0]
-    if not len(idx):
-        return []
-    runs = []
-    s, p = idx[0], idx[0]
-    for i in idx[1:]:
-        if i != p + 1:
-            if p - s + 1 >= min_len:
-                runs.append((int(s), int(p)))
-            s = i
-        p = i
-    if p - s + 1 >= min_len:
-        runs.append((int(s), int(p)))
-    runs.sort(key=lambda r: r[1] - r[0], reverse=True)
-    return runs
-
-
-def autocrop(rgb, positive=False):
-    """Trim the dark leader, the blank (no-film) pre/post-load scan, and the
-    residual low-detail margins, returning (cropped, (r0, r1, c0, c1)).
-
-    Operates on the already de-wrapped, IR-removed visible image (a single
-    contiguous zone). Rows: a row is non-image if it's very dark (leader) OR
-    bright *and* neutral (light through no film). We keep the largest contiguous
-    run of image rows. After that, further trim uniform (low-detail) rows from
-    both ends — this removes blank film base (orange mask, no exposure) that is
-    neither dark nor bright-neutral. Cols: trim residual low-detail margins.
-
-    positive=True (slide film): the gaps between frames are as dark as the
-    leader, so dark rows are not cut (that would keep a single frame); the
-    low-detail trim removes the leader instead.
-    """
-    full = float(rgb.max()) or 1.0
-    sub = rgb[:, ::8, :].astype(np.float32)
-    bright = sub.mean((1, 2))
-    spread = sub.max(2).mean(1) - sub.min(2).mean(1)
-    dark = (bright < 0.06 * full) & (not positive)
-    blank = (bright > 0.55 * full) & (spread < 0.03 * full)
-    r0, r1 = _all_runs(~(dark | blank))[0]
-
-    # Trim low-detail (uniform film base) from both ends. Sample every 4 rows;
-    # threshold at 25% of the median detail in the central half of the ribbon.
-    step = 4
-    lum_e = rgb[r0:r1 + 1:step, ::8, :].astype(np.float32)
-    row_det = lum_e.std(axis=(1, 2))
-    n = len(row_det)
-    mid_det = np.median(row_det[n // 4: 3 * n // 4]) if n > 4 else row_det.mean()
-    thresh = 0.25 * mid_det
-    trim_s = 0
-    while trim_s < n and row_det[trim_s] < thresh:
-        trim_s += 1
-    trim_e = n - 1
-    while trim_e > trim_s and row_det[trim_e] < thresh:
-        trim_e -= 1
-    r0 = r0 + trim_s * step
-    r1 = min(r1, r0 + (trim_e - trim_s + 1) * step)
-
-    lum = rgb[r0:r1 + 1:15].astype(np.float32).mean(2)
-    cs = lum.std(0)
-    c0, c1 = _all_runs(cs > 0.28 * cs.max())[0]
-    return rgb[r0:r1 + 1, c0:c1 + 1], (r0, r1, c0, c1)
-
-
 # OEM picture geometry per sensor width (TLB.dll FUN_10011a60): framing block
 # (lines), picture length (lines), pitch (lines). docs/TLB_FINDINGS.md
 # "Picture framing".
@@ -876,7 +808,7 @@ TLX_GEOMETRY = {2000: (8, 3000, 3206), 1500: (6, 2250, 2405), 1000: (4, 1500, 16
 # TLX has no presets for these; its operator types Width / UnitWidth into
 # "Pre-Scan Framing Adjust". Panoramic (XPan) is the Width 5530 / UnitWidth
 # 5736 XPan users enter there at Base 16; half frame is half a full frame
-# [assumed, not yet checked on a real roll].
+# (checked on one half-frame roll).
 FRAME_FORMATS = {
     "full": (1.0, 1.0),
     "half": (0.5, 0.5),
@@ -886,7 +818,7 @@ FRAME_FORMATS = {
 
 def tlx_geometry(width, fmt="full"):
     """(block, length, pitch) in ribbon rows for a sensor width and picture
-    format. A width with no OEM entry (e.g. trimmed by autocrop) takes the
+    format. A width with no OEM entry (e.g. trimmed by --crop-width) takes the
     nearest resolution's."""
     block, length, pitch = TLX_GEOMETRY[min(TLX_GEOMETRY, key=lambda w: abs(w - width))]
     kl, kp = FRAME_FORMATS[fmt]
@@ -1063,10 +995,6 @@ def main():
                          "frame) or pano (XPan panoramic); default full")
     ap.add_argument("--crop-width", type=int,
                     help="keep only this many px of width (drop blank overscan)")
-    ap.add_argument("--autocrop", action=argparse.BooleanOptionalAction,
-                    default=True,
-                    help="auto-trim leader/blank-scan/structural-bands (default "
-                         "on; --no-autocrop keeps the full raw ribbon)")
     ap.add_argument("--register", action=argparse.BooleanOptionalAction,
                     default=True,
                     help="co-register the trilinear R/G/B sensor lines (default "
@@ -1259,15 +1187,23 @@ def main():
     if perm != [0, 1, 2]:
         rgb = rgb[:, :, perm]
 
-    if args.autocrop:
-        rgb, (r0, r1, c0, c1) = autocrop(rgb, positive=args.slide)
-        print(f"autocrop: rows {r0}-{r1}, cols {c0}-{c1} -> {rgb.shape[1]}x{rgb.shape[0]}")
+    # OEM framing: fixed picture length and pitch per resolution, each crop
+    # anchored at its picture's start (docs/TLB_FINDINGS.md "Picture framing").
+    # It runs on the whole ribbon, as TLX and the web app do.
+    starts, frame_w, pitch = tlx_frame_grid(rgb, positive=args.slide, fmt=args.format)
+    if not starts:
+        sys.exit(f"no frames: the ribbon ({rgb.shape[0]} rows) is shorter than "
+                 f"one {args.format} picture pitch ({pitch} rows)")
+    print(f"frame grid: pitch={pitch} rows, {len(starts)} frames")
     if args.crop_width:
         rgb = rgb[:, :args.crop_width]
     if args.invert:
         rgb = rgb.max() - rgb
+    # The film base and roll balance are measured on the framed rows only,
+    # leaving out the leader and the no-film light around the strip.
+    film = rgb[starts[0]:starts[-1] + frame_w]
 
-    # OEM C-41 inversion: measure the film base (Dmin) once on the whole ribbon
+    # OEM C-41 inversion: measure the film base (Dmin) once for the roll
     # so every frame inverts against the same white point, then apply per-frame.
     c41 = None
     oem = None
@@ -1279,15 +1215,15 @@ def main():
               + ", ColRevLut1.pf, romm.pf")
     elif args.invert_c41 and args.eeprom_dir:
         negmat, lut = load_neg_matrix(args.eeprom_dir), _c41_lut()
-        step = max(1, rgb.shape[0] // 4000)
-        bal = oem_roll_balance(np.asarray(rgb[::step, ::4]), negmat, lut,
+        step = max(1, film.shape[0] // 4000)
+        bal = oem_roll_balance(np.asarray(film[::step, ::4]), negmat, lut,
                                args.oem_balance)
         oem = (negmat, lut, RpdLut(rpd_path), bal)
         print(f"C-41 invert: OEM colour path (NegMatrix from {args.eeprom_dir}, "
               f"rpd.pf), roll balance {args.oem_balance:g}: RPD gains "
               f"{np.round(bal[0], 3).tolist()}")
     elif args.invert_c41:
-        base = measure_dmin(rgb, pct=args.c41_dmin_pct)
+        base = measure_dmin(film, pct=args.c41_dmin_pct)
         c41 = (base, _c41_lut())
         print(f"C-41 invert: Dmin (film base) R,G,B = "
               f"{np.round(base).astype(int).tolist()}, matrix={args.c41_matrix}, "
@@ -1295,14 +1231,6 @@ def main():
 
     rot = (args.rotate // 90) % 4
 
-    # OEM framing: fixed picture length and pitch per resolution, each crop
-    # anchored at its picture's start (docs/TLB_FINDINGS.md "Picture framing").
-    starts, frame_w, pitch = tlx_frame_grid(rgb, positive=args.slide, fmt=args.format)
-    if len(starts) <= 1:
-        starts, frame_w = [0], rgb.shape[0]
-        print("single frame")
-    else:
-        print(f"frame grid: pitch={pitch} rows, {len(starts)} frames")
     flare = None
     if slide is not None:
         flare = measure_slide_flare(rgb, args.slide_flare)

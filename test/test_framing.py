@@ -46,6 +46,23 @@ class TlxFramingTests(unittest.TestCase):
         for k, s in enumerate(starts):
             self.assertLessEqual(abs(s - (first + k * pitch)), block)
 
+    def test_dark_frame_mid_roll(self):
+        # A near-black frame mid-roll and a dark leader: every picture is
+        # found on the whole ribbon, none on the leader.
+        block, length, pitch = img.TLX_GEOMETRY[2000]
+        first, n = 4000, 7
+        rgb = np.full((first + pitch * n + 1000, 2000, 3), 60000, np.uint16)
+        rgb[:2000] = 500                                    # dark leader
+        for k in range(n):
+            s = first + k * pitch
+            rgb[s:s + length] = 20000
+            rgb[s:s + length, ::2] = 26000                  # some detail
+        rgb[first + 3 * pitch:first + 3 * pitch + length] = 1500   # dark frame
+        starts, _, _ = img.tlx_frame_grid(rgb)
+        self.assertEqual(len(starts), n)
+        for k, s in enumerate(starts):
+            self.assertLessEqual(abs(s - (first + k * pitch)), block)
+
     def test_format_geometry(self):
         self.assertEqual(img.tlx_geometry(2000, "full"), (8, 3000, 3206))
         self.assertEqual(img.tlx_geometry(2000, "half"), (8, 1500, 1603))

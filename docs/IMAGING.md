@@ -22,7 +22,7 @@ committed.
   export whenever an archive is found): density LUT → the unit's NegMatrix →
   `rpd.pf`. Without one it falls back to `--invert-c41` (Dmin positive) and
   `--jpeg` (rpd.pf render with auto-levels). It also marker-aligns each row,
-  registers the trilinear lines, autocrops, and detects frames.
+  registers the trilinear lines, and detects frames.
 - The web service is a **two-stage minilab flow**: prescan → operator confirms
   crops in the browser → high-res export.
 
@@ -193,7 +193,7 @@ no characterization curve is involved.
 ## What `tools/pakon_image.py` does today
 
 Marker-align rows → deinterleave 16-bit LE R,G,B (+ trailing IR block) →
-trilinear R/G/B line registration → autocrop → detect frames → per-frame crop →
+trilinear R/G/B line registration → detect frames → per-frame crop →
 invert/render → TIFF/JPEG.
 
 - **`--invert-c41`** (the faithful positive): per-channel **Dmin** normalisation
@@ -240,13 +240,21 @@ resolution (Base 16: 3000/3206 rows, Base 8: 2250/2405, Base 4: 1500/1603), an
 inverted per-block brightness profile thresholded from its histogram into
 picture/gap, picture-length runs placed first, missing pictures filled between
 them and extrapolated at the ends. Each crop is anchored at its picture start
-and spans the full sensor width. In the web flow the detected centres only
-*seed* the interactive confirmation.
+and spans the full sensor width. In the web app it runs only when the
+operator presses Auto-frame in Frames (`/api/autoframe`, in the selected
+Format); a raw opens with its saved boxes, or none. The prescan still frames
+the roll in its last auto-framed format, for the scene balance only.
 
-A width with no OEM entry (e.g. trimmed by the CLI autocrop) takes the
-nearest resolution's geometry. `--format full|half|pano` (the web app's
-Format) scales the picture length and pitch: half frame = half of full
-[assumed], panoramic (XPan) = 5530 / 5736 rows at Base 16.
+Framing runs on the whole ribbon, in the CLI as in the web app; there is no
+autocrop step. The former `autocrop` (ours, not the OEM's) kept the longest
+run of film rows before framing, so it cut a roll at its first dark frame (a
+36-exposure roll gave 20 frames of 34, a half-frame roll 1 of 12). On five
+real rolls (full, half frame, slide) the whole-ribbon framing found every
+frame confirmed in the web app's Frames, within ~10–30 rows. A width with no
+OEM entry (e.g. `--crop-width`) takes the nearest resolution's geometry.
+`--format full|half|pano` (the Format in the web app's Frames) scales the picture length
+and pitch: half frame = half of full (TLX has no preset; checked on a
+half-frame B&W roll, 1500/1603 lands on all 10 confirmed frames), panoramic (XPan) = 5530 / 5736 rows at Base 16.
 
 ## The OEM "Ansel" cascade (the full minilab look — context)
 
