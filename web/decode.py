@@ -224,12 +224,14 @@ FILMS = ("c41", "bw", "slide")   # colour negative, silver B&W, slide (E-6)
 
 
 def prescan(raw_path, progress=None, film="c41", fmt="full") -> dict:
-    """Stage 1. Build + cache the ribbon, render the long preview strip, and
-    auto-detect initial frame centres. Returns a metadata dict (all JSON-able).
+    """Stage 1. Build + cache the ribbon and render the long preview strip.
+    The frames found here only feed the roll's colour balance; the boxes are
+    placed in Frames (by hand, or autoframe()). Returns a metadata dict (all
+    JSON-able).
     film="bw" renders silver B&W: the same inversion, then grey; "slide"
     renders reversal film through the OEM positive path (no inversion).
-    fmt (full | half | pano) is the picture format the frames are found and
-    sized for."""
+    fmt (full | half | pano) is the picture format the frames are found in
+    (the raw's last auto-framing)."""
     grey = film == "bw"
     WORK_DIR.mkdir(parents=True, exist_ok=True)
     clear_work()                          # the last roll's frames
@@ -302,6 +304,16 @@ def prescan(raw_path, progress=None, film="c41", fmt="full") -> dict:
         "film": film,
         "flare": None if flare is None else [float(x) for x in flare],
     }
+
+
+def autoframe(ribbon_path, film="c41", fmt="full") -> dict:
+    """The OEM framing on the cached ribbon, run when the operator asks for it
+    in Frames. Returns the box centres (full rows), the picture length and
+    pitch, and the format."""
+    rgb = np.load(str(ribbon_path), mmap_mode="r")
+    starts, frame_w, pitch = tlx_frame_grid(rgb, positive=film == "slide", fmt=fmt)
+    return {"centres": [int(s + frame_w // 2) for s in starts],
+            "frame_w": int(frame_w), "pitch": int(pitch), "format": fmt}
 
 
 def export_frames(ribbon_path, base, centres, widths=None, rotate=90,

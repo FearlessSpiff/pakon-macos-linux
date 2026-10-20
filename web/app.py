@@ -12,14 +12,14 @@ Endpoints
 ---------
 GET  /api/status                  scanner state + current job info
 POST /api/firmware                SSE — load firmware (cold device)
-POST /api/scan                    SSE — run a scan (a new order in the work folder; film c41|bw|slide, format full|half|pano)
+POST /api/scan                    SSE — run a scan (a new order in the work folder; film c41|bw|slide)
 POST /api/workdir                 set the work folder scans go into
 POST /api/eject                   SSE — run the film out of the transport
 POST /api/open                    pick a .raw on the host (keeps its crops)
-POST /api/process                 SSE — decode the opened .raw or the last scan (film c41|bw|slide, format full|half|pano)
+POST /api/process                 SSE — decode the opened .raw or the last scan (film c41|bw|slide)
+POST /api/autoframe               place the boxes with the OEM framing (format full|half|pano)
 GET  /api/frames                  list decoded frames
 GET  /api/frames/{n}/thumb        JPEG thumbnail
-GET  /api/frames/{n}/tiff         16-bit TIFF download
 POST /api/save                    SSE — save the frames to the work folder (jpeg|tiff|raw|contact)
 POST /api/reveal                  show a saved export folder in Finder (macOS)
 POST /api/update/open             open the newer release's page in the browser
@@ -42,7 +42,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import dx, eeprom, orders, telemetry, update
-from .decode import (WORK_DIR, PREVIEW_PATH, FILMS, FRAME_FORMATS, prescan, export_frames,
+from .decode import (WORK_DIR, PREVIEW_PATH, FILMS, FRAME_FORMATS, prescan, autoframe, export_frames,
                      make_contact_sheet, find_eeprom_dir, clear_work)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -322,7 +322,7 @@ async def _run_streaming(args: list[str], out_path: Path | None, keys=None):
     yield {"type": "exit", "code": proc.returncode}
 
 
-async def _scan_stream(film: str, fmt: str = "full"):
+async def _scan_stream(film: str):
     if not REPLAY_BIN.exists():
         yield _sse({"type": "error",
                     "message": f"pakon_replay binary not found: {REPLAY_BIN}"})
@@ -336,7 +336,7 @@ async def _scan_stream(film: str, fmt: str = "full"):
         yield _sse({"type": "log", "message": "Detecting scanner model..."})
         model = await _detect_model()
     if model == "F-135" and eeprom_dir is not None:
-        async for ev in _scan_code_stream(eeprom_dir, film, fmt):
+        async for ev in _scan_code_stream(eeprom_dir, film):
             yield ev
         return
     if film != "c41":
@@ -401,9 +401,8 @@ async def _scan_stream(film: str, fmt: str = "full"):
     mb = round(size / 1_048_576, 1)
     if proc.returncode == 0:
         _save_film(out_path, film)
-        _save_format(out_path, fmt)
         yield _sse({"type": "done", "bytes": size, "mb": mb, "path": str(out_path),
-                    "film": film, "format": fmt, "dx": dx.for_raw(out_path)})
+                    "film": film, "dx": dx.for_raw(out_path)})
     else:
         yield _sse({"type": "error",
                     "message": f"scan failed (exit {proc.returncode})"})
@@ -420,7 +419,7 @@ def _prepare_out() -> tuple[Path | None, str | None]:
     return out_path, None
 
 
-async def _scan_code_stream(eeprom_dir: Path, film: str, fmt: str = "full"):
+async def _scan_code_stream(eeprom_dir: Path, film: str):
     """F-135 scan with nothing replayed: setup, light calibration (open gate,
     keep the film out; reused for an hour like the OEM software, see
     include/pakon_calcache.h), motor start, then the operator feeds the film."""
@@ -447,9 +446,8 @@ async def _scan_code_stream(eeprom_dir: Path, film: str, fmt: str = "full"):
     mb = round(size / 1_048_576, 1)
     if code == 0:
         _save_film(out_path, film)
-        _save_format(out_path, fmt)
         yield _sse({"type": "done", "bytes": size, "mb": mb, "path": str(out_path),
-                    "film": film, "format": fmt, "dx": dx.for_raw(out_path)})
+                    "film": film, "dx": dx.for_raw(out_path)})
     else:
         yield _sse({"type": "error",
                     "message": f"scan failed (exit {code}) — see the log"})
@@ -502,14 +500,10 @@ async def api_eject():
 
 
 @app.post("/api/scan")
-async def api_scan(film: str = Body("c41", embed=True),
-                   format: str = Body("full", embed=True)):
+async def api_scan(film: str = Body("c41", embed=True)):
     if film not in FILMS:
         return JSONResponse({"error": f"unknown film type: {film}"}, status_code=400)
-    if format not in FRAME_FORMATS:
-        return JSONResponse({"error": f"unknown format: {format}"}, status_code=400)
-    return StreamingResponse(_reported(_scan_stream(film, format), "scan", "scan",
-                                       film=film, format=format),
+    return StreamingResponse(_reported(_scan_stream(film), "scan", "scan", film=film),
                              media_type="text/event-stream",
                              headers=_SSE_HEADERS)
 
@@ -625,11 +619,11 @@ def _run_job(work, on_done, name: str, page: str, stats=None):
 
 
 @app.post("/api/process")
-async def api_process(film: str | None = Body(None, embed=True),
-                      format: str | None = Body(None, embed=True)):
-    """Prescan: cache the ribbon, render the preview strip, detect frame centres.
-    `film` (c41 | bw | slide) and `format` (full | half | pano) default to the
-    ones recorded for the raw."""
+async def api_process(film: str | None = Body(None, embed=True)):
+    """Prescan: cache the ribbon and render the preview strip. `film`
+    (c41 | bw | slide) defaults to the one recorded for the raw. No boxes are
+    placed: Frames restores the saved ones, and /api/autoframe places new ones
+    when the operator asks."""
     if _state["processing"]:
         async def _busy():
             yield _sse({"type": "error", "message": "Already processing"})
@@ -651,13 +645,7 @@ async def api_process(film: str | None = Body(None, embed=True),
         film = "c41"
     else:
         _save_film(raw_path, film)
-    if format is None:
-        fmt = _raw_format(raw_path)
-    elif format not in FRAME_FORMATS:
-        fmt = "full"
-    else:
-        fmt = format
-        _save_format(raw_path, fmt)
+    fmt = _raw_format(raw_path)
     _state["frames"] = []
     _state["prescan"] = None
     _state["processing"] = True
@@ -667,12 +655,37 @@ async def api_process(film: str | None = Body(None, embed=True),
         # hand the browser everything it needs to place crops (no ribbon path)
         return {"type": "done", "saved": _load_crops(raw_path, meta["rows"]),
                 **{k: meta[k] for k in (
-                    "rows", "cols", "pitch", "frame_w", "box_w", "centres",
+                    "rows", "cols", "pitch", "frame_w", "box_w",
                     "preview_w", "preview_h", "scale", "film", "format")}}
 
     return _run_job(lambda prog: prescan(raw_path, progress=prog, film=film, fmt=fmt),
                     _done, "process", "process",
-                    lambda m: {"film": film, "format": fmt, "frames": len(m["centres"])})
+                    lambda m: {"film": film})
+
+
+@app.post("/api/autoframe")
+async def api_autoframe(format: str = Body("full", embed=True)):
+    """Place a box on every picture with the OEM framing (docs/TLB_FINDINGS.md
+    "Picture framing") in `format` (full | half | pano), and remember the
+    format for the raw. The boxes replace nothing on disk: <raw>.crops.json
+    is written only at export."""
+    meta, raw = _state["prescan"], _state["scan_path"]
+    if not meta:
+        return JSONResponse({"error": "Process a roll first"}, status_code=400)
+    if format not in FRAME_FORMATS:
+        return JSONResponse({"error": f"unknown format: {format}"}, status_code=400)
+    if _state["processing"]:
+        return JSONResponse({"error": "Already processing"}, status_code=409)
+    loop = asyncio.get_event_loop()
+    found = await loop.run_in_executor(
+        _executor, lambda: autoframe(meta["ribbon"], meta["film"], format))
+    # the scene balance weighs exported frames against these (export_frames)
+    meta.update(found)
+    if raw is not None:
+        _save_format(raw, format)
+    telemetry.event("autoframe", "frames", format=format,
+                    frames=len(found["centres"]))
+    return found
 
 
 # ── Film type of a raw: <raw>.film beside it ──────────────────────────────────────
@@ -708,8 +721,8 @@ def _save_film(raw: Path, film: str) -> None:
 
 
 # ── Picture format of a raw: <raw>.format beside it ─────────────────────────────
-# full | half | pano. Written by the scan and whenever the operator picks
-# another format in Process. Full frame when absent.
+# full | half | pano. Written when the operator auto-frames the raw in
+# Frames. Full frame when absent.
 
 def _format_path(raw: Path) -> Path:
     return raw.with_name(raw.name + ".format")
@@ -851,34 +864,6 @@ async def api_thumb(n: int):
     if not path:
         return JSONResponse({"error": "not found"}, status_code=404)
     return FileResponse(path, media_type="image/jpeg")
-
-
-@app.get("/api/frames/{n}/tiff")
-async def api_tiff(n: int):
-    """Inverted positive TIFF (16-bit)."""
-    path = _frame_file(n, "tiff")
-    if not path:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    return FileResponse(path, media_type="image/tiff", filename=f"frame_{n:02d}.tif")
-
-
-@app.get("/api/frames/{n}/raw")
-async def api_raw(n: int):
-    """Raw negative TIFF (16-bit, uninverted) — for inverting in another tool."""
-    path = _frame_file(n, "raw_tiff")
-    if not path:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    return FileResponse(path, media_type="image/tiff",
-                        filename=f"frame_{n:02d}_raw.tif")
-
-
-@app.get("/api/frames/{n}/jpeg")
-async def api_jpeg(n: int):
-    """Inverted positive JPEG (8-bit)."""
-    path = _frame_file(n, "jpg")
-    if not path:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    return FileResponse(path, media_type="image/jpeg", filename=f"frame_{n:02d}.jpg")
 
 
 # ── Zip export ────────────────────────────────────────────────────────────────

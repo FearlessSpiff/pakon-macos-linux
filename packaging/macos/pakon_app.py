@@ -82,7 +82,7 @@ def main():
     webview.settings["ALLOW_DOWNLOADS"] = True       # the frame / zip links
     if server.started:
         webview.create_window("Pakon", f"http://127.0.0.1:{port}/",
-                              width=1280, height=880, min_size=(960, 640))
+                              width=1280, height=800, min_size=(960, 640))
     else:
         webview.create_window("Pakon", html=(
             "<body style='font:15px -apple-system;padding:2em'>"

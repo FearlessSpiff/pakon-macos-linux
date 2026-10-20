@@ -74,8 +74,10 @@ It's an independent project, not made or supported by Kodak.
    about a minute: **keep the film out** until it says *"Motor running — feed
    the film now"*, then feed the strip. The scan stops by itself after the
    film comes through.
-5. **Check the frames.** The roll opens in **Frames**. Click to place a box,
-   press **Enter** to add the next one, and use the arrow keys to nudge.
+5. **Check the frames.** The roll opens in **Frames**. Pick the **Format**
+   (full frame, half frame or panoramic) and press **Auto-frame** to put a box
+   on every frame, or click to place a box yourself and press **Enter** to add
+   the next one. Use the arrow keys to nudge.
 6. **Save.** Press **Export**, then choose what to save: JPEGs, TIFFs, raw
    negatives or a contact sheet. Everything lands in your work folder
    (`~/pakon` unless you pick another), one folder per roll.
