@@ -455,6 +455,29 @@ NegMatrix then grey.
   `--ice`, then a checkbox in the web UI. About 1 day; testable offline on our
   F-135 captures, whose 8000-sample rows already carry the IR block (today it
   is discarded).
+  **Prototype, 2026-10-15 (`tools/pakon_ice.py`, not wired in yet):** a numpy
+  port of nkscan's `dust.rs` (MIT/Apache; the openICE pipeline, GPL-3.0,
+  AGPL-compatible), Coolscan LS-5000 constants. Pakon side: the IR plane
+  (flat-fielded against the open gate, black 300: our IR dark table is taken
+  with the IR LED on), IR/visible offset measured 0 rows / 0 columns, gate
+  margin ~3.5% (`PAKON_METERING` 0.985; Nikon's ~2% also flagged noise and
+  edges), confidence spread over rows too. Tried on a slide strip and a C-41
+  roll (serial 3054): hairs and a scratch removed, 0.1-0.5% of pixels
+  rebuilt, ~2.4 s per frame; the red -> IR dye leak is 0.014 on the slides,
+  0.040 on C-41 (independently 0.041, corr 0.98).
+  **2026-10-20:** in the web app (Frames: "Remove dust (ICE)", applied at
+  export; off for raws without an IR lane, i.e. B&W since IR off). Works at
+  every base (IR block = last quarter of the row; dpi from the width); the
+  IR plane takes out the slide / B&W scan-vs-calibration IR duty (1.2x).
+  The first ~40-60 columns of every line have amplified, heavy-tailed IR
+  noise (the gate shades the line start: open gate 0.26x at column 0, noise
+  2.6-3.8x, dark tail 3-6x), which passed the gate as specks: 15-36% of the
+  rebuilt pixels. The gate margin is now widened per column by
+  max(light fall-off from the calibration, the frame's own dark tail); the
+  edge share fell to 7-22%, the middle unchanged, real hairs and scratches
+  still removed (C-41 Base 4 / 8, slide Base 16; ~0.4 / 1.1 / 2.4 s a
+  frame). Cause of the dark tail unknown (a dark scan would tell). Left:
+  `pakon_image.py --ice`, unit tests, a dusty roll. The plan it follows:
   1. Split the IR block per row; align it to the visible image (the OEM
      calibrates an "IR lag", so it may be offset; measure it like the
      trilinear R/G/B leads).

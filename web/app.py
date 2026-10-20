@@ -705,7 +705,7 @@ async def api_process(film: str | None = Body(None, embed=True)):
         return {"type": "done", "saved": _load_crops(raw_path, meta["rows"]),
                 **{k: meta[k] for k in (
                     "rows", "cols", "pitch", "frame_w", "box_w",
-                    "preview_w", "preview_h", "scale", "film", "format")}}
+                    "preview_w", "preview_h", "scale", "film", "format", "ice")}}
 
     return _run_job(lambda prog: prescan(raw_path, progress=prog, film=film, fmt=fmt),
                     _done, "process", "process",
@@ -850,6 +850,7 @@ async def api_preview():
 async def api_export_frames(
     centres: list[int] = Body(..., embed=True),
     widths: list[int] | None = Body(default=None, embed=True),
+    ice: bool = Body(default=False, embed=True),
 ):
     meta = _state["prescan"]
     if not meta:
@@ -875,7 +876,8 @@ async def api_export_frames(
                              roll_centres=meta.get("centres"),
                              film=meta.get("film", "c41"),
                              flare=meta.get("flare"),
-                             dx_film=dx.for_raw(raw) if raw is not None else None)
+                             dx_film=dx.for_raw(raw) if raw is not None else None,
+                             ice=ice and bool(meta.get("ice")))
 
     def _done(result):
         _state["frames"] = result
@@ -885,7 +887,8 @@ async def api_export_frames(
         return {"type": "done", "count": len(result)}
 
     return _run_job(_work, _done, "export", "frames",
-                    lambda r: {"frames": len(r), "film": meta.get("film", "c41")})
+                    lambda r: {"frames": len(r), "film": meta.get("film", "c41"),
+                               "ice": ice and bool(meta.get("ice"))})
 
 
 # ── Frame access ──────────────────────────────────────────────────────────────

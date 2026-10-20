@@ -237,6 +237,9 @@
     .scan-table .col-film { width: 190px; }
     .scan-table .col-res { width: 250px; }
     .scan-table select { width: 100%; }
+    .ice-opt { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem;
+               cursor: pointer; white-space: nowrap; }
+    .ice-opt.off { opacity: 0.45; cursor: not-allowed; }
     .scan-table .col-act { width: 262px; }      /* Scan + Advance film buttons + gap + padding + shadow */
     /* narrow: one labelled row per cell instead of three squeezed columns */
     @media (max-width: 560px) {
@@ -731,6 +734,9 @@
     <div class="row">
       <button class="ghost" id="frame-add">+ Add</button>
       <button class="ghost" id="frame-del">− Remove</button>
+      <label class="ice-opt" id="ice-label"
+             title="Rebuild dust and scratches from the scan's infrared channel">
+        <input type="checkbox" id="ice-on"> Remove dust (ICE)</label>
       <button id="export-btn">Export <span id="export-count"></span> frames</button>
     </div>
   </div>
@@ -846,7 +852,7 @@
     <summary>What's sent?</summary>
     <ul>
       <li>Crash reports: the error, and for a failed scan the scanner's last log lines.</li>
-      <li>Usage: pages opened, how long scans, processing and exports take, film type, scan resolution, frame count.</li>
+      <li>Usage: pages opened, how long scans, processing and exports take, film type, scan resolution, frame count, whether dust removal was on.</li>
       <li>Never: photos, file or folder names, your scanner's serial number. Reports carry a random ID.</li>
     </ul>
   </details>
@@ -1336,6 +1342,24 @@
 
   // ── Process = prescan (long preview + detected frame centres) ──────────────
   let meta = null;      // prescan metadata
+
+  // Dust removal needs the scan's infrared channel: B&W scans without it
+  // (silver blocks IR), and older raws may lack the calibration's IR table.
+  // The choice is remembered in this browser.
+  function showIce() {
+    const box = $('ice-on'), ok = !!(meta && meta.ice);
+    box.disabled = !ok;
+    $('ice-label').classList.toggle('off', !ok);
+    $('ice-label').title = ok
+      ? 'Rebuild dust and scratches from the scan\'s infrared channel (slower export)'
+      : (meta && meta.film === 'bw'
+         ? 'B&W is scanned without the infrared channel, so there is nothing to find dust with'
+         : 'This scan has no infrared channel to find dust with');
+  }
+  try { $('ice-on').checked = localStorage.getItem('pakon-ice') === '1'; } catch {}
+  $('ice-on').addEventListener('change', () => {
+    try { localStorage.setItem('pakon-ice', $('ice-on').checked ? '1' : '0'); } catch {}
+  });
   let crops = [];       // confirmed crops: {c: centre row, w: width} in full res
   let cur = 0;          // current frame index
 
@@ -1363,6 +1387,7 @@
         $('proc-prog-label').textContent = 'Done';
         setMsg($('proc-msg'), 'Ready — the frames are in Frames', 'ok');
         meta = ev;
+        showIce();
         startConfirm();
         showSpace('frames');
         framesError('');
@@ -1556,7 +1581,8 @@
 
     await postSSE('/api/export_frames',
       { centres: crops.map(c => Math.round(c.c)),
-        widths: crops.map(c => Math.round(c.w)) },
+        widths: crops.map(c => Math.round(c.w)),
+        ice: $('ice-on').checked && !$('ice-on').disabled },
       ev => {
         if (ev.type === 'progress') {
           $('exp-prog').value = ev.pct;
