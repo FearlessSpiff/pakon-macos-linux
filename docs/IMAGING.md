@@ -22,7 +22,7 @@ committed.
   export whenever an archive is found): density LUT → the unit's NegMatrix →
   `rpd.pf`. Without one it falls back to `--invert-c41` (Dmin positive) and
   `--jpeg` (rpd.pf render with auto-levels). It also marker-aligns each row,
-  registers the trilinear lines, autocrops, and detects frames.
+  registers the trilinear lines, and detects frames.
 - The web service is a **two-stage minilab flow**: prescan → operator confirms
   crops in the browser → high-res export.
 
@@ -89,13 +89,12 @@ usable range is about D 3.3, while slides reach D 3.5–4):
   within 3× the darkest rows' level, runs of 80+ rows) are measured, capped at
   D 2, and `--slide-flare` (default 0.5) × (that − the D 3.5 level) is
   subtracted from the raw before the density step.
-- **Frame grid** (`slide_frame_grid`): the detail-based comb of
-  `find_frame_grid` locked onto a wrong pitch (2732) on a strip of mostly
-  dark frames, and the stray light measured at its "gaps" (picture) came out
-  35× too high. Slides now place frames from the black gaps themselves:
-  pitch = median gap spacing (~3180 rows at Base 16 on serial 3054), missing
-  gaps filled in, partial end frames kept when they hold most of a frame;
-  it falls back to `find_frame_grid` with fewer than two gaps. 0.5–0.75 looked right on
+- **Frame grid**: slides use the OEM framing (`tlx_frame_grid`, see
+  Framing below) on the uninverted profile, so the black gaps are the low
+  level, as TLB.dll does for film type 2. The earlier detail-based comb
+  locked onto a wrong pitch (2732) on a strip of mostly dark frames, and the
+  stray light measured at its "gaps" (picture) came out 35× too high.
+  Flare strength: 0.5–0.75 looked right on
   that roll (deeper, neutral shadows, detail kept); 1.0 crushed the shade.
 
 **Silver B&W** (TLB.dll film type 4) goes through the same LUT and NegMatrix
@@ -194,7 +193,7 @@ no characterization curve is involved.
 ## What `tools/pakon_image.py` does today
 
 Marker-align rows → deinterleave 16-bit LE R,G,B (+ trailing IR block) →
-trilinear R/G/B line registration → autocrop → detect frames → per-frame crop →
+trilinear R/G/B line registration → detect frames → per-frame crop →
 invert/render → TIFF/JPEG.
 
 - **`--invert-c41`** (the faithful positive): per-channel **Dmin** normalisation
@@ -235,12 +234,27 @@ models were artefacts of a floating row phase and are superseded (commit
 
 ### Framing
 
-`find_frame_grid`: never forces a count. Measures the true frame **pitch** by
-autocorrelation of the per-row detail profile → count = `round(span/pitch)` →
-phase-locked uniform comb → snap each tooth to its gap → drop leader/partial end
-cells. The caller crops a **fixed 3000-px window centred between gaps** (the
-leftover splits evenly as edge margin; per-gap rebate measurement was unreliable).
-In the web flow the detected centres only *seed* the interactive confirmation.
+`tlx_frame_grid` (the OEM method, TLB.dll `FN_iFramePictures`; details in
+`docs/TLB_FINDINGS.md` "Picture framing"): fixed picture length and pitch per
+resolution (Base 16: 3000/3206 rows, Base 8: 2250/2405, Base 4: 1500/1603), an
+inverted per-block brightness profile thresholded from its histogram into
+picture/gap, picture-length runs placed first, missing pictures filled between
+them and extrapolated at the ends. Each crop is anchored at its picture start
+and spans the full sensor width. In the web app it runs only when the
+operator presses Auto-frame in Frames (`/api/autoframe`, in the selected
+Format); a raw opens with its saved boxes, or none. The prescan still frames
+the roll in its last auto-framed format, for the scene balance only.
+
+Framing runs on the whole ribbon, in the CLI as in the web app; there is no
+autocrop step. The former `autocrop` (ours, not the OEM's) kept the longest
+run of film rows before framing, so it cut a roll at its first dark frame (a
+36-exposure roll gave 20 frames of 34, a half-frame roll 1 of 12). On five
+real rolls (full, half frame, slide) the whole-ribbon framing found every
+frame confirmed in the web app's Frames, within ~10–30 rows. A width with no
+OEM entry (e.g. `--crop-width`) takes the nearest resolution's geometry.
+`--format full|half|pano` (the Format in the web app's Frames) scales the picture length
+and pitch: half frame = half of full (TLX has no preset; checked on a
+half-frame B&W roll, 1500/1603 lands on all 10 confirmed frames), panoramic (XPan) = 5530 / 5736 rows at Base 16.
 
 ## The OEM "Ansel" cascade (the full minilab look — context)
 

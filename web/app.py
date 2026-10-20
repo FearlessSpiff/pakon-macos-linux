@@ -17,9 +17,9 @@ POST /api/workdir                 set the work folder scans go into
 POST /api/eject                   SSE — run the film out of the transport
 POST /api/open                    pick a .raw on the host (keeps its crops)
 POST /api/process                 SSE — decode the opened .raw or the last scan (film c41|bw|slide)
+POST /api/autoframe               place the boxes with the OEM framing (format full|half|pano)
 GET  /api/frames                  list decoded frames
 GET  /api/frames/{n}/thumb        JPEG thumbnail
-GET  /api/frames/{n}/tiff         16-bit TIFF download
 POST /api/save                    SSE — save the frames to the work folder (jpeg|tiff|raw|contact)
 POST /api/reveal                  show a saved export folder in Finder (macOS)
 POST /api/update/open             open the newer release's page in the browser
@@ -42,7 +42,7 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import dx, eeprom, orders, telemetry, update
-from .decode import (WORK_DIR, PREVIEW_PATH, FILMS, prescan, export_frames,
+from .decode import (WORK_DIR, PREVIEW_PATH, FILMS, FRAME_FORMATS, prescan, autoframe, export_frames,
                      make_contact_sheet, find_eeprom_dir, clear_work)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
@@ -620,8 +620,10 @@ def _run_job(work, on_done, name: str, page: str, stats=None):
 
 @app.post("/api/process")
 async def api_process(film: str | None = Body(None, embed=True)):
-    """Prescan: cache the ribbon, render the preview strip, detect frame centres.
-    `film` (c41 | bw | slide) defaults to the one recorded for the raw."""
+    """Prescan: cache the ribbon and render the preview strip. `film`
+    (c41 | bw | slide) defaults to the one recorded for the raw. No boxes are
+    placed: Frames restores the saved ones, and /api/autoframe places new ones
+    when the operator asks."""
     if _state["processing"]:
         async def _busy():
             yield _sse({"type": "error", "message": "Already processing"})
@@ -643,6 +645,7 @@ async def api_process(film: str | None = Body(None, embed=True)):
         film = "c41"
     else:
         _save_film(raw_path, film)
+    fmt = _raw_format(raw_path)
     _state["frames"] = []
     _state["prescan"] = None
     _state["processing"] = True
@@ -652,12 +655,37 @@ async def api_process(film: str | None = Body(None, embed=True)):
         # hand the browser everything it needs to place crops (no ribbon path)
         return {"type": "done", "saved": _load_crops(raw_path, meta["rows"]),
                 **{k: meta[k] for k in (
-                    "rows", "cols", "pitch", "frame_w", "centres",
-                    "preview_w", "preview_h", "scale", "film")}}
+                    "rows", "cols", "pitch", "frame_w", "box_w",
+                    "preview_w", "preview_h", "scale", "film", "format")}}
 
-    return _run_job(lambda prog: prescan(raw_path, progress=prog, film=film), _done,
-                    "process", "process",
-                    lambda m: {"film": film, "frames": len(m["centres"])})
+    return _run_job(lambda prog: prescan(raw_path, progress=prog, film=film, fmt=fmt),
+                    _done, "process", "process",
+                    lambda m: {"film": film})
+
+
+@app.post("/api/autoframe")
+async def api_autoframe(format: str = Body("full", embed=True)):
+    """Place a box on every picture with the OEM framing (docs/TLB_FINDINGS.md
+    "Picture framing") in `format` (full | half | pano), and remember the
+    format for the raw. The boxes replace nothing on disk: <raw>.crops.json
+    is written only at export."""
+    meta, raw = _state["prescan"], _state["scan_path"]
+    if not meta:
+        return JSONResponse({"error": "Process a roll first"}, status_code=400)
+    if format not in FRAME_FORMATS:
+        return JSONResponse({"error": f"unknown format: {format}"}, status_code=400)
+    if _state["processing"]:
+        return JSONResponse({"error": "Already processing"}, status_code=409)
+    loop = asyncio.get_event_loop()
+    found = await loop.run_in_executor(
+        _executor, lambda: autoframe(meta["ribbon"], meta["film"], format))
+    # the scene balance weighs exported frames against these (export_frames)
+    meta.update(found)
+    if raw is not None:
+        _save_format(raw, format)
+    telemetry.event("autoframe", "frames", format=format,
+                    frames=len(found["centres"]))
+    return found
 
 
 # ── Film type of a raw: <raw>.film beside it ──────────────────────────────────────
@@ -690,6 +718,31 @@ def _save_film(raw: Path, film: str) -> None:
         _film_path(raw).write_text(film + "\n")
     except OSError as exc:
         print(f"film type not saved: {exc}", flush=True)
+
+
+# ── Picture format of a raw: <raw>.format beside it ─────────────────────────────
+# full | half | pano. Written when the operator auto-frames the raw in
+# Frames. Full frame when absent.
+
+def _format_path(raw: Path) -> Path:
+    return raw.with_name(raw.name + ".format")
+
+
+def _raw_format(raw: Path) -> str:
+    try:
+        fmt = _format_path(raw).read_text().strip()
+        if fmt in FRAME_FORMATS:
+            return fmt
+    except OSError:
+        pass
+    return "full"
+
+
+def _save_format(raw: Path, fmt: str) -> None:
+    try:
+        _format_path(raw).write_text(fmt + "\n")
+    except OSError as exc:
+        print(f"format not saved: {exc}", flush=True)
 
 
 # ── Saved crop positions: <raw>.crops.json beside the raw ───────────────────────
@@ -731,6 +784,7 @@ async def api_open(path: str = Body(..., embed=True)):
     _state["frames"] = []
     _state["prescan"] = None
     return {"path": str(_state["scan_path"]), "film": _raw_film(_state["scan_path"]),
+            "format": _raw_format(_state["scan_path"]),
             "dx": dx.for_raw(_state["scan_path"])}
 
 
@@ -810,34 +864,6 @@ async def api_thumb(n: int):
     if not path:
         return JSONResponse({"error": "not found"}, status_code=404)
     return FileResponse(path, media_type="image/jpeg")
-
-
-@app.get("/api/frames/{n}/tiff")
-async def api_tiff(n: int):
-    """Inverted positive TIFF (16-bit)."""
-    path = _frame_file(n, "tiff")
-    if not path:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    return FileResponse(path, media_type="image/tiff", filename=f"frame_{n:02d}.tif")
-
-
-@app.get("/api/frames/{n}/raw")
-async def api_raw(n: int):
-    """Raw negative TIFF (16-bit, uninverted) — for inverting in another tool."""
-    path = _frame_file(n, "raw_tiff")
-    if not path:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    return FileResponse(path, media_type="image/tiff",
-                        filename=f"frame_{n:02d}_raw.tif")
-
-
-@app.get("/api/frames/{n}/jpeg")
-async def api_jpeg(n: int):
-    """Inverted positive JPEG (8-bit)."""
-    path = _frame_file(n, "jpg")
-    if not path:
-        return JSONResponse({"error": "not found"}, status_code=404)
-    return FileResponse(path, media_type="image/jpeg", filename=f"frame_{n:02d}.jpg")
 
 
 # ── Zip export ────────────────────────────────────────────────────────────────

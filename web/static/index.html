@@ -398,6 +398,12 @@
       padding-bottom: 10px;
     }
     .frames-header h2 { margin-bottom: 0; }
+    /* Frames: the box tools under the header's line, keys left, buttons right */
+    .frames-tools {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 12px; flex-wrap: wrap;
+      margin: -8px 0 8px;
+    }
     .frames-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
@@ -422,10 +428,6 @@
       background: var(--bg);
     }
     .frame-num { font-size: 0.75rem; font-family: 'IBM Plex Mono', monospace; font-weight: 600; color: var(--text); }
-    .frame-footer a {
-      font-size: 0.75rem; font-family: 'IBM Plex Mono', monospace; color: var(--red); text-decoration: none; font-weight: 600;
-    }
-    .frame-footer a:hover { text-decoration: underline; }
 
     .hidden { display: none !important; }
 
@@ -437,6 +439,18 @@
       padding: 10px 0;
       position: relative;
     }
+    /* A solid, always-visible scrollbar: macOS's overlay one is a faint grey
+       line on the dark strip. WebKit/Chromium only (the app is WKWebView). */
+    .strip-wrap::-webkit-scrollbar { height: 16px; }
+    .strip-wrap::-webkit-scrollbar-track {
+      background: #3a3836;
+      border-top: 2px solid var(--border);
+    }
+    .strip-wrap::-webkit-scrollbar-thumb {
+      background: var(--accent);
+      border: 2px solid var(--border);
+    }
+    .strip-wrap::-webkit-scrollbar-thumb:hover { background: var(--accent-hover); }
     .strip-wrap::before, .strip-wrap::after {
       content: ""; position: absolute; left: 0; right: 0; height: 8px;
       background-image: radial-gradient(circle at 6px 4px, transparent 3px, #f4f1ea 3.5px);
@@ -643,10 +657,11 @@
   <ol class="steps">
     <li><strong>Open a raw</strong>Scan a roll, or <b>Open…</b> any <code>.raw</code>
       on this computer. It is read in place, never copied, and processed right
-      away: a preview of the whole strip with the frames found, in a few seconds
-      to a minute.</li>
-    <li><strong>Place and export</strong>The roll opens in <b>Frames</b>. Click the strip to start a box there, <kbd>Enter</kbd>
-      adds the next one. Export saves the box positions beside the raw, so
+      away: a preview of the whole strip, in a few seconds to a minute.</li>
+    <li><strong>Place and export</strong>The roll opens in <b>Frames</b>. Pick the
+      <b>Format</b>, then press <b>Auto-frame</b> to put a box on every frame, or
+      place them by hand: click the strip, <kbd>Enter</kbd> adds one,
+      <kbd>Delete</kbd> removes one. Export saves the box positions beside the raw, so
       opening it again brings them back.</li>
   </ol>
   <div class="raw-slot" id="raw-slot">
@@ -690,21 +705,26 @@
   <div class="frames-header">
     <h2 id="confirm-title">Confirm frames</h2>
     <div class="row">
-      <span class="msg" id="confirm-hint">← → nudge · ↑ ↓ prev/next · Enter add · Delete remove · click to place</span>
       <label class="field">
-        Box
-        <select id="box-size">
+        Format
+        <select id="box-size" aria-label="Picture format">
           <option value="full" selected>Full frame</option>
           <option value="half">Half frame</option>
           <option value="pano">Panoramic</option>
         </select>
       </label>
+      <button class="ghost" id="frame-auto" title="Put a box on every frame of this format">Auto-frame</button>
+    </div>
+  </div>
+  <div class="frames-tools">
+    <span class="msg" id="confirm-hint">← → nudge · ↑ ↓ prev/next · Enter add · Delete remove · click to place</span>
+    <div class="row">
       <button class="ghost" id="frame-add">+ Add</button>
       <button class="ghost" id="frame-del">− Remove</button>
       <button id="export-btn">Export <span id="export-count"></span> frames</button>
     </div>
   </div>
-  <div class="msg" id="frames-msg" style="margin-top: -8px; margin-bottom: 4px;"></div>
+  <div class="msg" id="frames-msg" style="margin-bottom: 4px;" hidden></div>
   <div class="strip-wrap" id="strip-wrap">
     <div class="strip-inner" id="strip-inner">
       <img id="strip-img" alt="film strip">
@@ -1025,7 +1045,7 @@
       s.classList.toggle('active', s.id === 'space-' + name));
     document.querySelectorAll('.spaces button').forEach(b =>
       b.setAttribute('aria-selected', String(b.dataset.space === name)));
-    if (name === 'frames' && crops.length) fitStrip();
+    if (name === 'frames' && meta) fitStrip();   // measured once it is on screen
   }
   const setBusy = (name, on) => $('tab-' + name).classList.toggle('busy', on);
   document.querySelectorAll('.spaces button').forEach(b =>
@@ -1302,9 +1322,7 @@
         meta = ev;
         startConfirm();
         showSpace('frames');
-        setMsg($('frames-msg'), ev.saved
-          ? `Restored ${ev.saved.centres.length} saved frames — adjust or export`
-          : 'Click the strip to place a box — Enter adds the next, Delete removes one', 'ok');
+        framesError('');
       } else if (ev.type === 'error') {
         setMsg($('proc-msg'), ev.message, 'err');
         framesWait('Could not process the roll', ev.message, null);
@@ -1318,21 +1336,21 @@
 
   // ── Confirm frames (interactive crop placement) ────────────────────────────
   function startConfirm() {
-    // Restore the boxes saved at this raw's last export, else start with a
-    // single box near the first detected frame; the operator adds the rest
-    // with Enter (and removes with Delete). The full ribbon is shown.
-    const first = (meta.centres && meta.centres.length)
-      ? meta.centres[0] : Math.round(meta.frame_w / 2);
+    // Restore the boxes saved at this raw's last export, else none: the
+    // operator auto-frames (Auto-frame, in the selected format) or places
+    // them by hand, nudges them, adds with Enter and removes with Delete.
+    // The full ribbon is shown.
+    $('box-size').value = meta.format || 'full';
     const saved = meta.saved;
     crops = saved
       ? saved.centres.map((c, i) => ({ c, w: (saved.widths || [])[i] || meta.frame_w }))
-      : [{ c: first, w: boxSize() }];
+      : [];
     cur = 0;
     $('strip-img').src = '/api/preview?t=' + Date.now();
     $('frames-wait').classList.add('hidden');
     $('confirm-card').classList.remove('hidden');
     fitStrip();
-    $('strip-wrap').focus();
+    $('strip-wrap').focus({ preventScroll: true });
   }
 
   // The Frames empty/progress card: title (null keeps it), step, progress
@@ -1349,12 +1367,12 @@
   // window height whatever the preview's own size.
   let zoom = 1;
   function fitStrip() {
-    if (!meta || !crops.length) return;
+    if (!meta) return;
     // from the strip's top on the page down to the space bar, less the
     // strip's own padding, the card's bottom padding and the scrollbar
     const top = $('strip-wrap').getBoundingClientRect().top + window.scrollY;
     const bar = document.querySelector('.spaces').offsetHeight;
-    const target = Math.max(220, Math.min(720, window.innerHeight - top - bar - 100));
+    const target = Math.max(200, Math.min(560, window.innerHeight - top - bar - 100));
     zoom = target / meta.preview_h;
     $('strip-img').style.height = Math.round(meta.preview_h * zoom) + 'px';
     $('strip-img').style.width = Math.round(meta.preview_w * zoom) + 'px';
@@ -1368,10 +1386,10 @@
   const pxPerRow = () => meta.scale * zoom;              // full row -> strip px
   const fullToPx = c => c * pxPerRow();
   // Box width (full-res rows) for the size selected in the dropdown.
-  // Full is 3000 (3:2 at 2000 tall), half 1500, panoramic 6000.
-  const BOX_MULT = { full: 1, half: 0.5, pano: 2 };
+  // The server sizes each format for the scan's resolution (meta.box_w; at
+  // Base 16 full 3000, half 1500, panoramic 5530).
   const boxSize = () =>
-    Math.round(meta.frame_w * (BOX_MULT[$('box-size').value] || 1));
+    (meta.box_w && meta.box_w[$('box-size').value]) || meta.frame_w;
 
   function renderStrip() {
     const inner = $('strip-inner');
@@ -1386,9 +1404,11 @@
       box.onclick = () => { cur = i; renderStrip(); };
       inner.appendChild(box);
     });
-    $('confirm-title').textContent =
-      `Confirm frames — ${cur + 1} / ${crops.length}`;
+    $('confirm-title').textContent = crops.length
+      ? `Confirm frames — ${cur + 1} / ${crops.length}` : 'Place the frames';
     $('export-count').textContent = crops.length;
+    $('export-btn').disabled = !crops.length;
+    if (!crops.length) return;
     // keep the active box in view
     const wrap = $('strip-wrap'), x = fullToPx(crops[cur].c);
     if (x < wrap.scrollLeft + 80 || x > wrap.scrollLeft + wrap.clientWidth - 80)
@@ -1396,6 +1416,7 @@
   }
 
   function nudge(dpx) {                  // dpx in preview pixels -> full rows
+    if (!crops.length) return;
     crops[cur].c = Math.max(0, Math.min(meta.rows,
       crops[cur].c + Math.round(dpx / pxPerRow())));
     renderStrip();
@@ -1407,20 +1428,52 @@
     // (edge to edge), so full, half and panoramic frames tile correctly when added in a run.
     const w = boxSize();
     const last = crops[crops.length - 1];
-    const c = Math.min(meta.rows, last.c + Math.round((last.w + w) / 2));
+    const c = last ? Math.min(meta.rows, last.c + Math.round((last.w + w) / 2))
+                   : Math.round(w / 2);
     crops.push({ c, w }); cur = crops.length - 1; renderStrip();
   }
   function delFrame() {
-    if (crops.length <= 1) return;
-    crops.splice(cur, 1); cur = Math.min(cur, crops.length - 1); renderStrip();
+    if (!crops.length) return;
+    crops.splice(cur, 1); cur = Math.max(0, Math.min(cur, crops.length - 1)); renderStrip();
   }
 
+  // Frames shows a message line only for an error ('' hides it).
+  function framesError(text) {
+    setMsg($('frames-msg'), text, 'err');
+    $('frames-msg').hidden = !text;
+  }
+
+  // Auto-frame: the OEM framing in the selected format replaces the boxes.
+  $('frame-auto').addEventListener('click', async () => {
+    const btn = $('frame-auto'), fmt = $('box-size').value;
+    btn.disabled = true;
+    framesError('');
+    try {
+      const resp = await fetch('/api/autoframe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ format: fmt }),
+      });
+      const d = await resp.json();
+      if (!resp.ok) throw new Error(d.error || 'auto-frame failed');
+      meta.format = d.format;
+      meta.pitch = d.pitch;
+      crops = d.centres.map(c => ({ c, w: d.frame_w }));
+      cur = 0;
+      renderStrip();
+      if (!crops.length) framesError('No frames found in this format — place them by hand');
+    } catch (err) {
+      framesError(err.message);
+    }
+    btn.disabled = false;
+    $('strip-wrap').focus({ preventScroll: true });
+  });
   $('frame-add').addEventListener('click', addFrame);
   $('frame-del').addEventListener('click', delFrame);
   // Changing the dropdown resizes the currently selected box.
   $('box-size').addEventListener('change', () => {
     if (crops.length) { crops[cur].w = boxSize(); renderStrip(); }
-    $('strip-wrap').focus();
+    $('strip-wrap').focus({ preventScroll: true });
   });
 
   // click on the strip background to start the current crop there (its
@@ -1428,6 +1481,7 @@
   $('strip-inner').addEventListener('click', e => {
     if (e.target.closest('.cropbox')) return;
     const rect = $('strip-inner').getBoundingClientRect();
+    if (!crops.length) { crops.push({ c: 0, w: boxSize() }); cur = 0; }
     crops[cur].c = Math.round((e.clientX - rect.left) / pxPerRow() + crops[cur].w / 2);
     renderStrip();
   });
@@ -1501,7 +1555,6 @@
     const grid = $('frames-grid');
     grid.innerHTML = '';
     for (const { index } of frames) {
-      const n2 = String(index).padStart(2, '0');
       const card = document.createElement('div');
       card.className = 'frame-card';
       card.innerHTML = `
@@ -1509,13 +1562,6 @@
              alt="Frame ${index}" loading="lazy">
         <div class="frame-footer">
           <span class="frame-num">Frame ${index}</span>
-          <span>
-            <a href="/api/frames/${index}/raw"  download="frame_${n2}_raw.tif">raw</a>
-            &nbsp;·&nbsp;
-            <a href="/api/frames/${index}/tiff" download="frame_${n2}.tif">TIFF</a>
-            &nbsp;·&nbsp;
-            <a href="/api/frames/${index}/jpeg" download="frame_${n2}.jpg">JPG</a>
-          </span>
         </div>`;
       grid.appendChild(card);
     }

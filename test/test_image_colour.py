@@ -165,9 +165,6 @@ class SlideTests(unittest.TestCase):
         # Capped at D 2: a light "gap" cannot crush the shadows.
         self.assertTrue(np.all(img.measure_slide_flare(
             rgb, 1.0, gaps=[(0, 3999)]) <= 640))
-        cuts, pitch = img.slide_frame_grid(rgb, pitch_lo=800, pitch_hi=1200)
-        self.assertEqual(pitch, 1000)
-        self.assertEqual(cuts, [0, 999, 1999, 2999, 3999])
         # Removing it darkens the deep shadows, leaves the highlights alone.
         px = np.array([[[300 + 200] * 3, [300 + 40000] * 3]], np.uint16)
         fl = img.measure_slide_flare(rgb, 1.0)
@@ -198,20 +195,6 @@ class SlideTests(unittest.TestCase):
         rgb = np.full((1, lp - px0, 3), 300 + int(64000 * 1.318 / 4), np.uint16)
         img.apply_flat_field(rgb, (np.full((lp - px0, 3), 300, np.float32), g_slide))
         self.assertAlmostEqual(float(rgb.mean()), 300 + 16000, delta=3)
-
-    def test_autocrop_keeps_frames_between_dark_gaps(self):
-        rng = np.random.default_rng(2)
-        rows = []
-        for k in range(4):                                   # 4 frames, black gaps
-            rows.append(np.full((40, 64, 3), 300, np.uint16))
-            rows.append(rng.integers(5000, 60000, (300, 64, 3)).astype(np.uint16))
-        rows.append(np.full((40, 64, 3), 300, np.uint16))
-        rgb = np.concatenate(rows)
-        _, (r0, r1, _, _) = img.autocrop(rgb, positive=True)
-        self.assertLess(r0, 60)
-        self.assertGreater(r1, rgb.shape[0] - 60)
-        _, (r0, r1, _, _) = img.autocrop(rgb)                # negative rules: one frame
-        self.assertLess(r1 - r0, 400)
 
 
 if __name__ == "__main__":
