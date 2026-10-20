@@ -61,17 +61,17 @@ static void hex(const char *tag, const uint8_t *b, size_t n)
         printf(" %02x", b[i]);
 }
 
-/* First Ctrl-C during a motor-running phase (--scan replay, --advance):
- * finish cleanly (captured teardown / motor stop writes) instead of dying
- * with the drive engaged. The handler resets to default so a second Ctrl-C
- * kills immediately. */
+/* First Ctrl-C during a motor-running phase (--scan replay, --advance, the
+ * --scan-sm / --scan-code image loop): finish cleanly (teardown / motor stop
+ * writes) instead of dying with the drive engaged. In the image loop it, or
+ * SIGTERM, also means "end of roll" (the web app's Stop button). The handler
+ * resets to default so a second signal kills immediately. */
 static volatile sig_atomic_t scan_interrupted;
 
 static void scan_sigint_handler(int signum)
 {
-    (void)signum;
     scan_interrupted = 1;
-    signal(SIGINT, SIG_DFL);
+    signal(signum, SIG_DFL);
 }
 
 static int do_open(unsigned timeout)
@@ -874,10 +874,20 @@ static void sm_scan_loop(pakon_dev *dev, FILE *img, unsigned long long *img_byte
     unsigned long long max_bytes = (unsigned long long)max_mb * 1024u * 1024u;
 
     printf("  [sm] driven image phase: read 0x86 + event service (no re-arm); stop on "
-           "%u trailing open-gate chunks, %u empty windows after film, or %lu MB cap\n",
-           SM_TRAIL_WHITE, SM_MAX_EMPTY, max_mb);
+           "%u trailing open-gate chunks, %u empty windows after film, %lu MB cap, "
+           "or Ctrl-C / SIGTERM\n", SM_TRAIL_WHITE, SM_MAX_EMPTY, max_mb);
+    fflush(stdout);
 
+    /* A stop request ends the roll here; the caller still tears down. */
+    scan_interrupted = 0;
+    void (*previous_sigint)(int) = signal(SIGINT, scan_sigint_handler);
+    void (*previous_sigterm)(int) = signal(SIGTERM, scan_sigint_handler);
     for (;;) {
+        if (scan_interrupted) {
+            printf("  [sm] stop requested -> end of roll (%llu bytes%s)\n",
+                   *img_bytes, film_seen ? "" : ", no film seen");
+            break;
+        }
         size_t got = 0;
         pakon_result r = pakon_usb_recv(dev, PAKON_EP_IMAGE_IN, buf, sizeof(buf),
                                         &got, SCAN_IMG_TIMEOUT_MS);
@@ -952,6 +962,8 @@ static void sm_scan_loop(pakon_dev *dev, FILE *img, unsigned long long *img_byte
             break;
         }
     }
+    signal(SIGINT, previous_sigint);
+    signal(SIGTERM, previous_sigterm);
     printf("  [sm] event service: %u events acknowledged, %u FIFO-overflow flags\n",
            events, overflows);
     printf("  [sm] dx: %s\n", pakon_dx_roll_format(dx, dx_line, sizeof dx_line));
