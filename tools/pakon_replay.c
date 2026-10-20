@@ -501,14 +501,19 @@ static int hexbytes(const char *s, uint8_t *out, size_t max)
                                    * open-gate chunk is only ~75% "white" -- 90%
                                    * could never trip and the scan ran to the cap.
                                    * For the replayed OEM scans (--scan, --scan-sm). */
-#define SM_WHITE_FRAC_CODE_PCT 84u /* --scan-code: its own calibration brings the
-                                   * open gate to full scale (R/G/B clipped, IR at
-                                   * 40000), so an open-gate chunk is 87.9-94.4%
-                                   * white (it varies with how much IR block the
-                                   * chunk catches), while the C-41 scan duties
-                                   * lift film base to at most 79.6% (serial 3054,
-                                   * 2026-10-19). 60 counted film base as open gate
-                                   * and ended the scan on the strip. */
+/* --scan-code: its own calibration drives the open gate's R/G/B to full
+ * scale, but sets the IR peak to ~40000 -- on SM_WHITE_THRESH -- so with that
+ * threshold an open-gate chunk counted 76-94% white depending on how much IR
+ * it caught and where the IR level landed (C-41 Base 4: 75.7%, never reached
+ * the old 84%, the scan never stopped). Count only near-saturated samples
+ * instead: above 55000 the open gate is >= 56.5% of a chunk (5th percentile,
+ * every base and film), film <= 35.6% in any chunk (strip edges included;
+ * 0% inside the frames, slides too), so 45% sits mid-gap. Replayed over 16
+ * saved --scan-code raws (serial 3054, 2026-10-20): stops 25-28 chunks after
+ * every strip, never on one. The replayed OEM scans keep 40000/60% (their
+ * open gate is only ~48900). */
+#define SM_WHITE_THRESH_CODE   55000u
+#define SM_WHITE_FRAC_CODE_PCT 45u
 #define SM_TRAIL_WHITE    24u     /* consecutive white chunks after film => done
                                    * (generous so a blown-highlight patch within a
                                    * frame doesn't false-stop) */
@@ -528,18 +533,19 @@ static int hexbytes(const char *s, uint8_t *out, size_t max)
                                    * and real film (>=20%%). */
 
 /* Is a 0x86 chunk dominated by open-gate white (no film in the gate)? Counts
- * 16-bit samples above SM_WHITE_THRESH and compares with `frac_pct`
- * (SM_WHITE_FRAC_PCT for the replayed scans, SM_WHITE_FRAC_CODE_PCT for
- * --scan-code). Used by both the driven loop's end-of-roll and verbatim
- * --autostop. */
-static int sm_chunk_is_white(const uint8_t *buf, size_t got, unsigned frac_pct)
+ * 16-bit samples above `thresh` and compares with `frac_pct`
+ * (SM_WHITE_THRESH / SM_WHITE_FRAC_PCT for the replayed scans,
+ * SM_WHITE_THRESH_CODE / SM_WHITE_FRAC_CODE_PCT for --scan-code). Used by both
+ * the driven loop's end-of-roll and verbatim --autostop. */
+static int sm_chunk_is_white(const uint8_t *buf, size_t got, unsigned thresh,
+                             unsigned frac_pct)
 {
     size_t samples = got / 2;
     if (samples == 0) return 0;
     size_t white = 0;
     for (size_t i = 0; i + 1 < got; i += 2) {
         unsigned v = (unsigned)buf[i] | ((unsigned)buf[i + 1] << 8);
-        if (v > SM_WHITE_THRESH) white++;
+        if (v > thresh) white++;
     }
     return white * 100u >= samples * frac_pct;
 }
@@ -723,7 +729,7 @@ static int do_scan(const char *script, const char *image_path, unsigned timeout,
             if (++nimg % 1000 == 0)
                 printf("  ... %lu image reads, %llu bytes\n", nimg, img_bytes);
             if (autostop && scan_armed && got) {
-                if (sm_chunk_is_white(buf, got, SM_WHITE_FRAC_PCT)) {
+                if (sm_chunk_is_white(buf, got, SM_WHITE_THRESH, SM_WHITE_FRAC_PCT)) {
                     if (film_seen && ++trail_white >= SM_TRAIL_WHITE) {
                         printf("  [autostop] end-of-roll white (%u chunks) after "
                                "%lu reads / %llu bytes -> stopping early\n",
@@ -854,7 +860,8 @@ static pakon_result sm_cmd(pakon_dev *dev, const uint8_t *raw, size_t n,
  * event pending we count an idle window. Primary stop is end-of-roll white. */
 static void sm_scan_loop(pakon_dev *dev, FILE *img, unsigned long long *img_bytes,
                          unsigned long *nimg, unsigned long *ncmd, unsigned long *errs,
-                         unsigned timeout, unsigned long max_mb, unsigned white_pct,
+                         unsigned timeout, unsigned long max_mb,
+                         unsigned white_thresh, unsigned white_pct,
                          int *film_seen_out, pakon_dx_roll *dx)
 {
     unsigned events = 0, overflows = 0;
@@ -889,7 +896,7 @@ static void sm_scan_loop(pakon_dev *dev, FILE *img, unsigned long long *img_byte
             if (hf & PAKON_HOST_FLAG_OVERFLOW)
                 overflows++;
             (*ncmd)++;
-            if (sm_chunk_is_white(buf, got, white_pct)) {  /* open gate = no film */
+            if (sm_chunk_is_white(buf, got, white_thresh, white_pct)) {  /* open gate = no film */
                 if (film_seen && ++trail_white >= SM_TRAIL_WHITE) {
                     printf("  [sm] end-of-roll: %u open-gate chunks after film "
                            "-> film fully scanned (%llu bytes)\n",
@@ -1122,7 +1129,7 @@ static int do_scan_sm(const char *script, const char *image_path, unsigned timeo
         int film_seen = 0;
         static pakon_dx_roll dx;
         sm_scan_loop(dev, img, &img_bytes, &nimg, &ncmd, &errs, timeout, max_mb,
-                     SM_WHITE_FRAC_PCT, &film_seen, &dx);
+                     SM_WHITE_THRESH, SM_WHITE_FRAC_PCT, &film_seen, &dx);
         write_dx_json(image_path, &dx);
         if (!film_seen)
             fprintf(stderr, "  [sm] WARNING: no film ever detected in the stream "
@@ -2586,7 +2593,7 @@ static int do_scan_code(unsigned timeout, const char *eeprom_dir, int scan_base,
     int film_seen = 0;
     static pakon_dx_roll dx;
     sm_scan_loop(dev, img, &img_bytes, &nimg, &ncmd, &errs, timeout, max_mb,
-                 SM_WHITE_FRAC_CODE_PCT, &film_seen, &dx);
+                 SM_WHITE_THRESH_CODE, SM_WHITE_FRAC_CODE_PCT, &film_seen, &dx);
     write_dx_json(image_path, &dx);
     printf("scan-code: %lu image reads, %llu bytes -> %s (%lu errors)%s\n", nimg,
            img_bytes, image_path, errs, film_seen ? "" : " -- no film seen");
