@@ -74,6 +74,10 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
+Arch: `sudo pacman -S base-devel cmake libusb`. To install Pakon as a desktop
+app (window, menu entry, udev rule), see
+[`packaging/linux/README.md`](../packaging/linux/README.md).
+
 ### macOS (Homebrew)
 
 ```sh
@@ -123,7 +127,8 @@ see `firmware/README.md` for where they come from and how to regenerate them.
 ```
 
 The loader refuses to continue unless the scanner reports the F-135/F-135+
-personality. Linux needs `sudo` (or a udev rule) for libusb; macOS does not.
+personality. Linux needs `sudo`, or the udev rule
+`packaging/linux/60-pakon.rules`, for libusb; macOS does not.
 
 **3. Back up the EEPROM (once)**
 
@@ -378,6 +383,8 @@ backup, and on the F-135+, scans replay the captured scripts.
 ```sh
 python3 -m pip install -r web/requirements.txt
 python3 -m uvicorn web.app:app --host 0.0.0.0 --port 8000
+# or, on a Linux desktop, the app window on localhost (packaging/linux/):
+python3 packaging/linux/pakon_linux.py
 ```
 
 Open `http://<host>:8000`. The UI opens on **Home** (start a scan or open a

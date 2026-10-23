@@ -97,8 +97,10 @@ If a strip stays inside the scanner, press **Advance film** on the Scan page.
 - If something goes wrong, the log is at `~/Library/Logs/Pakon/pakon.log`.
   Please [open an issue](https://github.com/jorshhh/pakon-macos/issues) with
   it.
-- **Linux, or a scanner shared on your network:** run Pakon from source. See
-  the [technical guide](docs/TECHNICAL.md). A Windows build is planned.
+- **Linux:** install from source with `packaging/linux/install.sh --udev`, or
+  on Arch with the `PKGBUILD`; see [Pakon on Linux](packaging/linux/README.md).
+  **A scanner shared on your network:** see the
+  [technical guide](docs/TECHNICAL.md). A Windows build is planned.
 
 ## Coming next
 

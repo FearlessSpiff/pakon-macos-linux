@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Pakon
+GenericName=Film Scanner
+Comment=Scan film on a Kodak Pakon F-135 or F-135+
+Exec=pakon
+Icon=pakon
+Terminal=false
+Categories=Graphics;Photography;Scanning;
+Keywords=scanner;film;negative;pakon;kodak;
+StartupWMClass=pakon

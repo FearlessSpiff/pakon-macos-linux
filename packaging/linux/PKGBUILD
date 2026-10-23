@@ -1,0 +1,70 @@
+# Arch Linux package for Pakon (Kodak/Pakon F-135 / F-135+ film scanner).
+#
+#   cd packaging/linux && makepkg -si
+#
+# Builds from the git repository below; for a local checkout use
+#   PAKON_SRC='git+file:///path/to/checkout#branch=<branch>' makepkg -si
+pkgname=pakon-git
+pkgver=r0
+pkgrel=1
+pkgdesc="Driver and app for the Kodak/Pakon F-135 and F-135+ film scanners"
+arch=('x86_64' 'aarch64')
+url="https://github.com/jorshhh/pakon-macos"
+license=('AGPL-3.0-or-later')
+depends=('libusb' 'python' 'python-fastapi' 'uvicorn' 'python-numpy'
+         'python-pillow' 'python-tifffile' 'python-pyusb' 'python-unicorn'
+         'python-pefile' 'python-certifi')
+makedepends=('git' 'cmake' 'pkgconf')
+optdepends=('python-pywebview: Pakon in its own window instead of the browser'
+            'python-gobject: GTK window backend for pywebview'
+            'webkit2gtk-4.1: GTK window backend for pywebview'
+            'ttf-dejavu: contact-sheet labels')
+provides=('pakon')
+conflicts=('pakon')
+source=("pakon::${PAKON_SRC:-git+https://github.com/FearlessSpiff/pakon-macos-linux.git#branch=feat/linux}")
+sha256sums=('SKIP')
+options=('!debug')
+
+pkgver() {
+    cd pakon
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short=7 HEAD)"
+}
+
+build() {
+    cmake -S pakon -B build -DCMAKE_BUILD_TYPE=Release -Wno-dev
+    cmake --build build
+}
+
+check() {
+    ctest --test-dir build --output-on-failure
+}
+
+package() {
+    local app="$pkgdir/usr/lib/pakon"
+    install -d "$app/build"
+    install -m 755 build/pakon_probe build/pakon_replay "$app/build/"
+    cd pakon
+    # what the app reads, in the repo's layout (as packaging/macos/pakon.spec):
+    # the scan scripts and firmware, not the USB captures
+    install -d "$app/web" "$app/tools" "$app/resources/f135plus" "$app/firmware"
+    cp -r --no-preserve=ownership web/*.py web/static "$app/web/"
+    install -m 644 tools/*.py "$app/tools/"
+    install -m 644 resources/*.pakscan resources/*.pakfw "$app/resources/"
+    install -m 644 resources/f135plus/*.pakscan "$app/resources/f135plus/"
+    install -m 644 firmware/*.hex firmware/README.md "$app/firmware/"
+    cp -r --no-preserve=ownership profiles oem "$app/"
+    install -Dm 644 packaging/linux/pakon_linux.py "$app/packaging/linux/pakon_linux.py"
+    python -m compileall -q -s "$pkgdir" "$app/web" "$app/tools" "$app/packaging"
+
+    install -d "$pkgdir/usr/bin"
+    cat > "$pkgdir/usr/bin/pakon" <<'EOF'
+#!/bin/sh
+exec python /usr/lib/pakon/packaging/linux/pakon_linux.py "$@"
+EOF
+    chmod 755 "$pkgdir/usr/bin/pakon"
+
+    install -Dm 644 packaging/linux/60-pakon.rules "$pkgdir/usr/lib/udev/rules.d/60-pakon.rules"
+    install -Dm 644 packaging/linux/pakon.desktop "$pkgdir/usr/share/applications/pakon.desktop"
+    install -Dm 644 website/pakon-icon.png "$pkgdir/usr/share/icons/hicolor/512x512/apps/pakon.png"
+    install -Dm 644 NOTICE "$pkgdir/usr/share/licenses/$pkgname/NOTICE"
+}

@@ -1,0 +1,14 @@
+# Kodak/Pakon F-135 / F-135+ film scanner: USB access without root.
+#
+#   0f05:f235  cold (before the firmware load)
+#   0f05:f135  warm (running Pakon firmware)
+#
+# uaccess gives it to whoever is logged in at the machine (systemd-logind).
+# For a headless service, add the service's user to a group and use
+# GROUP="<group>", MODE="0660" instead.
+#
+# Install: sudo cp 60-pakon.rules /etc/udev/rules.d/
+#          sudo udevadm control --reload && sudo udevadm trigger
+# then unplug and replug the scanner (or switch it off and on).
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0f05", ATTR{idProduct}=="f135", TAG+="uaccess"
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="0f05", ATTR{idProduct}=="f235", TAG+="uaccess"
