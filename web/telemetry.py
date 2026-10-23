@@ -43,7 +43,11 @@ ENDPOINT = RYBBIT_URL + "/api/track"
 _TIMEOUT = 8
 # A hard crash in native code (numpy, unicorn) kills Python before it can
 # report; faulthandler writes it here and the next launch sends it.
-CRASH_LOG = Path.home() / "Library/Logs/Pakon/crash.log"
+# The Mac app logs to ~/Library/Logs/Pakon; elsewhere the XDG state folder
+# (~/.local/state/pakon), next to the Linux launcher's pakon.log.
+CRASH_LOG = (Path.home() / "Library/Logs/Pakon/crash.log" if sys.platform == "darwin"
+             else Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
+             / "pakon" / "crash.log")
 
 _q: queue.Queue = queue.Queue(maxsize=200)
 _started = False
@@ -118,8 +122,12 @@ def _context():
 
 
 def _user_agent() -> str:
-    mac = platform.mac_ver()[0] or "10.15.7"
-    return (f"Mozilla/5.0 (Macintosh; Intel Mac OS X {mac.replace('.', '_')}) "
+    if sys.platform == "darwin":
+        mac = platform.mac_ver()[0] or "10.15.7"
+        system = f"Macintosh; Intel Mac OS X {mac.replace('.', '_')}"
+    else:
+        system = f"X11; Linux {platform.machine() or 'x86_64'}"
+    return (f"Mozilla/5.0 ({system}) "
             f"AppleWebKit/605.1.15 (KHTML, like Gecko) "
             f"Pakon/{os.environ.get('PAKON_VERSION', 'dev')}")
 
@@ -212,5 +220,6 @@ def start() -> None:
         faulthandler.enable(open(CRASH_LOG, "a"))
     except OSError:
         pass
-    event("app_open", "home", macos=platform.mac_ver()[0] or None)
+    event("app_open", "home", macos=platform.mac_ver()[0] or None,
+          linux=platform.release() if sys.platform.startswith("linux") else None)
 

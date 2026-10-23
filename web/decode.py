@@ -58,7 +58,9 @@ import pakon_ice  # noqa: E402
 
 from . import dx, eeprom  # noqa: E402
 
-WORK_DIR = Path("/tmp/pakon_web")
+# The ribbon cache and renders; PAKON_WORK moves them, e.g. off a RAM-backed
+# /tmp (the Linux launcher uses ~/.cache/pakon).
+WORK_DIR = Path(os.environ.get("PAKON_WORK") or "/tmp/pakon_web").expanduser()
 # What an export leaves in WORK_DIR; replaced by the next export or roll.
 _FRAME_FILES = ("frame_*", "thumb_*", "contact_sheet.jpg", "export_*.zip")
 
@@ -476,10 +478,38 @@ def export_frames(ribbon_path, base, centres, widths=None, rotate=90,
     return frames
 
 
+# The contact sheet's label font: Arial on a Mac, a common sans on Linux
+# (DejaVu, Liberation, Noto), Pillow's own as the last resort.
+_LABEL_FONTS = (
+    "/System/Library/Fonts/Supplemental/Arial.ttf",
+    "/usr/share/fonts/TTF/DejaVuSans.ttf",                          # Arch
+    "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",              # Debian/Ubuntu
+    "/usr/share/fonts/dejavu-sans-fonts/DejaVuSans.ttf",            # Fedora
+    "/usr/share/fonts/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    "/usr/share/fonts/noto/NotoSans-Regular.ttf",
+    "/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf",
+)
+
+
+def _label_font(size: int):
+    from PIL import ImageFont
+
+    for path in _LABEL_FONTS:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:
+            continue
+    try:
+        return ImageFont.load_default(size)       # Pillow >= 10.1 scales it
+    except TypeError:
+        return ImageFont.load_default()
+
+
 def make_contact_sheet(frames, cols: int = 6, cell_w: int = 480,
                        pad: int = 10, bg=(22, 22, 22), fg=(226, 226, 226)):
     """Tile the rendered frame JPEGs into one labelled contact-sheet image."""
-    from PIL import ImageDraw, ImageFont
+    from PIL import ImageDraw
 
     items = [f for f in frames if f.get("jpg") and Path(f["jpg"]).exists()]
     if not items:
@@ -493,11 +523,7 @@ def make_contact_sheet(frames, cols: int = 6, cell_w: int = 480,
     H = rows * (cell_h + label_h) + (rows + 1) * pad
     sheet = Image.new("RGB", (W, H), bg)
     draw = ImageDraw.Draw(sheet)
-    try:
-        font = ImageFont.truetype(
-            "/System/Library/Fonts/Supplemental/Arial.ttf", 16)
-    except OSError:
-        font = ImageFont.load_default()
+    font = _label_font(16)
     for k, f in enumerate(items):
         r, c = divmod(k, cols)
         x = pad + c * (cell_w + pad)

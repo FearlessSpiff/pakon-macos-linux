@@ -4,9 +4,10 @@ Pakon Scanner web service.
 Run from the repo root:
     uvicorn web.app:app --host 0.0.0.0 --port 8000
 
-The server must be run with USB access (root on Linux, or with a udev rule
-granting access to 0f05:f135 / 0f05:f235).  On macOS no privileges are
-needed.
+The server must be run with USB access (root on Linux, or with the udev rule
+packaging/linux/60-pakon.rules granting access to 0f05:f135 / 0f05:f235).
+On macOS no privileges are needed. PAKON_WORK moves the decoder's work folder
+(default /tmp/pakon_web).
 
 Endpoints
 ---------
@@ -23,7 +24,7 @@ POST /api/autoframe               place the boxes with the OEM framing (format f
 GET  /api/frames                  list decoded frames
 GET  /api/frames/{n}/thumb        JPEG thumbnail
 POST /api/save                    SSE — save the frames to the work folder (jpeg|tiff|raw|contact)
-POST /api/reveal                  show a saved export folder in Finder (macOS)
+POST /api/reveal                  show a saved export in Finder / the file manager
 POST /api/update/open             open the newer release's page in the browser
 POST /api/telemetry/consent       the user's crash-report / usage-statistics choice
 POST /api/telemetry/page|error    a page opened / a page error (web/telemetry.py)
@@ -40,7 +41,7 @@ from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -894,10 +895,12 @@ async def api_export_frames(
 # ── Frame access ──────────────────────────────────────────────────────────────
 
 @app.get("/api/frames")
-async def api_frames():
+async def api_frames(request: Request):
     raw = _state["scan_path"]
     return {"folder": str(orders.export_dir(raw)) if raw else None,
-            "reveal": sys.platform == "darwin",          # /api/reveal works
+            "reveal": _can_reveal(request),              # /api/reveal works
+            "reveal_label": "Show in Finder" if sys.platform == "darwin"
+                            else "Show in Files",
             "frames": [{"index": f["index"]} for f in _state["frames"]]}
 
 
@@ -981,16 +984,56 @@ async def api_save(fmt: str = Body(..., embed=True)):
                     lambda r: {"format": fmt, "frames": r["count"]})
 
 
+def _can_reveal(request: Request) -> bool:
+    """Whether /api/reveal can show a folder to the person using the page.
+    On a Mac always (the app's window). On Linux only when the page is open
+    on this machine (a browser elsewhere on the network cannot see its
+    desktop) and there is a desktop session with xdg-open to show it on."""
+    if sys.platform == "darwin":
+        return True
+    if not sys.platform.startswith("linux"):
+        return False
+    local = request.client is not None and request.client.host in (
+        "127.0.0.1", "::1", "localhost")
+    desktop = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+    return local and desktop and shutil.which("xdg-open") is not None
+
+
+async def _linux_reveal(target: Path) -> None:
+    """Select a file in its folder through the freedesktop FileManager1
+    interface (Nautilus, Dolphin, Nemo, Thunar, ...); open the folder with
+    xdg-open when that is missing or fails."""
+    if target.is_file() and shutil.which("dbus-send"):
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "dbus-send", "--session", "--print-reply",
+                "--dest=org.freedesktop.FileManager1", "--type=method_call",
+                "/org/freedesktop/FileManager1",
+                "org.freedesktop.FileManager1.ShowItems",
+                f"array:string:{target.as_uri()}", "string:",
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            if await asyncio.wait_for(proc.wait(), timeout=5) == 0:
+                return
+        except (OSError, asyncio.TimeoutError):
+            pass
+    subprocess.Popen(["xdg-open", str(target.parent if target.is_file() else target)],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 @app.post("/api/reveal")
-async def api_reveal(path: str = Body(..., embed=True)):
-    """Show a saved export in Finder. Only inside the work folder, macOS only."""
+async def api_reveal(request: Request, path: str = Body(..., embed=True)):
+    """Show a saved export in Finder or the Linux file manager. Only inside
+    the work folder, and only where _can_reveal says it can be seen."""
     target = Path(path).resolve()
     base = orders.work_dir().expanduser().resolve()
-    if sys.platform != "darwin" or not (target == base or base in target.parents):
+    if not _can_reveal(request) or not (target == base or base in target.parents):
         return JSONResponse({"error": "not available"}, status_code=400)
-    # a file is selected in its folder; a folder is opened
-    subprocess.Popen(["open", "-R", str(target)] if target.is_file()
-                     else ["open", str(target)])
+    if sys.platform == "darwin":
+        # a file is selected in its folder; a folder is opened
+        subprocess.Popen(["open", "-R", str(target)] if target.is_file()
+                         else ["open", str(target)])
+    else:
+        await _linux_reveal(target)
     return {"ok": True}
 
 
